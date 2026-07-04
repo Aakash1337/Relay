@@ -6,6 +6,7 @@ Each test pins a specific hardening so it cannot silently regress.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select, text
@@ -52,6 +53,35 @@ def test_approved_draft_content_cannot_be_edited(tenant_a, factory_a):
                 text("UPDATE outreach_drafts SET body = 'TAMPERED' WHERE id = :id"),
                 {"id": str(draft_id)},
             )
+
+
+def test_draft_cannot_be_inserted_already_approved(tenant_a, factory_a):
+    """A draft with INSERT rights cannot be born approved — that would mint
+    a self-approved draft and bypass the human gate."""
+    tenant_id, _ = tenant_a
+    lead_id = factory_a.lead()
+    # Give the lead a real campaign/draft chain by walking to a draft.
+    run_to_approval(tenant_id, lead_id)
+    with tenant_session(tenant_id) as session:
+        existing = session.execute(select(OutreachDraft)).scalar_one()
+        campaign_id = existing.campaign_id
+
+    with pytest.raises(IntegrityError, match="must be inserted as draft"):  # noqa: SIM117
+        with tenant_session(tenant_id) as session:
+            session.add(
+                OutreachDraft(
+                    tenant_id=tenant_id,
+                    lead_id=lead_id,
+                    campaign_id=campaign_id,
+                    version=99,
+                    subject="self-approved",
+                    body="never seen by a human",
+                    status="approved",  # born approved? no.
+                    approved_by="attacker",
+                    approved_at=datetime.now(tz=UTC),
+                )
+            )
+            session.flush()
 
 
 def test_draft_cannot_be_flipped_approved_without_approver(tenant_a, factory_a):

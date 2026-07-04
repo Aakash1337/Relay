@@ -32,6 +32,7 @@ def add_suppression(
     reason: str,
     source: str,
     created_by: str,
+    actor_type: str = "system",
     email: str | None = None,
     scope: str = "tenant",
     domain: str | None = None,
@@ -41,7 +42,11 @@ def add_suppression(
     applies_to_marketing: bool = True,
     applies_to_sales: bool = True,
 ) -> Suppression:
-    """Add a do-not-contact entry. Only the hash of the address is stored."""
+    """Add a do-not-contact entry. Only the hash of the address is stored.
+
+    ``actor_type`` records who really acted (default "system"; pass "human"
+    for a manual do-not-contact so the audit trail is not mislabeled).
+    """
     entry = Suppression(
         tenant_id=tenant_id,
         scope=scope,
@@ -57,13 +62,17 @@ def add_suppression(
         applies_to_sales=applies_to_sales,
     )
     session.add(entry)
+    # Flush first so the audit entry can reference the new row's id — a
+    # suppression-add must be traceable to the exact suppression record.
+    session.flush()
     audit.record(
         session,
         tenant_id=tenant_id,
-        actor_type="system",
+        actor_type=actor_type,
         actor_id=created_by,
         action="suppression.add",
         entity_type="suppression",
+        entity_id=str(entry.id),
         payload={
             "scope": scope,
             "reason": reason,
@@ -72,7 +81,6 @@ def add_suppression(
             "domain": entry.domain,
         },
     )
-    session.flush()
     log.info(
         "suppression added",
         scope=scope,

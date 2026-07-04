@@ -455,6 +455,17 @@ CREATE OR REPLACE FUNCTION fn_draft_guard() RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
+  -- A draft is BORN unapproved. Approval is only ever reached through the
+  -- pending_approval -> approved UPDATE path (below); an INSERT may not
+  -- create an already-approved/rejected row, or a caller with INSERT rights
+  -- could mint a self-approved draft and bypass the human gate entirely.
+  IF TG_OP = 'INSERT' AND NEW.status NOT IN ('draft', 'pending_approval') THEN
+    RAISE EXCEPTION
+      'a draft must be inserted as draft or pending_approval (got %)',
+      NEW.status
+      USING ERRCODE = 'check_violation';
+  END IF;
+
   IF TG_OP = 'UPDATE' THEN
     -- Version is the join key to lead.approved_message_version; never moves.
     IF NEW.version IS DISTINCT FROM OLD.version THEN

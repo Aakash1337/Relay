@@ -59,6 +59,10 @@ services:
       GENERIC_TIMEZONE: "UTC"
       # The API runs on the host during development.
       RELAY_API_BASE_URL: "http://host.docker.internal:8000"
+      # The spine's tick node authenticates to /internal/send-worker/tick
+      # with this admin token; without it the scheduled call is rejected.
+      # Fails fast (from your .env) rather than silently 403-ing later.
+      RELAY_ADMIN_TOKEN: "${RELAY_ADMIN_TOKEN:?set RELAY_ADMIN_TOKEN in your .env}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
