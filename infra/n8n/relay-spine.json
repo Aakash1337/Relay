@@ -1,0 +1,134 @@
+{
+  "name": "RELAY Spine — Phase 0",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## The deterministic spine (project documentation §3)\n\nThis workflow is dumb on purpose: it schedules and sequences work by calling the RELAY API — it does no reasoning and holds no business logic.\n\nEvery 5 minutes it:\n1. checks the API is healthy;\n2. ticks the internal send worker, which re-checks EVERY §10 invariant (suppression, dry-run, approval, idempotency) before executing anything.\n\nSetup: define RELAY_API_BASE_URL and RELAY_ADMIN_TOKEN as n8n environment variables (docker-compose.yml passes RELAY_API_BASE_URL already).\n\nApproval is a human action in the RELAY API — the spine cannot approve drafts and it cannot send. Later phases add sourcing/enrichment schedules here as more HTTP calls, without moving any decision into n8n.",
+        "height": 420,
+        "width": 460
+      },
+      "id": "note-1",
+      "name": "About this spine",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "schedule-1",
+      "name": "Every 5 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [520, 160]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.RELAY_API_BASE_URL }}/health",
+        "options": {}
+      },
+      "id": "http-health",
+      "name": "Health check",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [740, 160]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "ok",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-healthy",
+      "name": "API healthy?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [960, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.RELAY_API_BASE_URL }}/internal/send-worker/tick",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Admin-Token",
+              "value": "={{ $env.RELAY_ADMIN_TOKEN }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-tick",
+      "name": "Send-worker tick",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1180, 60]
+    }
+  ],
+  "connections": {
+    "Every 5 minutes": {
+      "main": [
+        [
+          {
+            "node": "Health check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Health check": {
+      "main": [
+        [
+          {
+            "node": "API healthy?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "API healthy?": {
+      "main": [
+        [
+          {
+            "node": "Send-worker tick",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

@@ -1,0 +1,72 @@
+# RELAY — DIY / zero-cost development stack (roadmap appendix).
+# Infra only: the API and worker run on the host via `uv` for a fast dev loop.
+#
+#   just infra-up   → Postgres + Redis + Mailpit
+#   just stack-up   → everything incl. the n8n workflow spine
+#
+# Nothing here is production configuration. Client production runs on a
+# hardened VPS / managed environment (project documentation §15).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: relay
+      POSTGRES_DB: relay
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay -d relay"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Local mail catcher: every "sent" mail is captured here; nothing leaves
+  # the machine. This is the only mail target that exists in Phases 0–1A.
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "8025:8025"   # web UI
+      - "1025:1025"   # SMTP
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+
+  # The deterministic workflow spine. Dumb on purpose: schedules and sequences
+  # pipeline steps by calling the RELAY API; it does no reasoning.
+  # NOTE: commercial licensing for client-facing use must be confirmed before
+  # any client deployment (project documentation §15).
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    ports:
+      - "5678:5678"
+    environment:
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      GENERIC_TIMEZONE: "UTC"
+      # The API runs on the host during development.
+      RELAY_API_BASE_URL: "http://host.docker.internal:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  n8n_data:

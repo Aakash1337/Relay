@@ -1,0 +1,30 @@
+# Environments & secrets — never commit real configuration
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Local data / runtime artifacts
+data/
+logs/
+*.log
+
+# Local Postgres cluster used by scripts/dev_pg.sh
+.pgdata/
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
