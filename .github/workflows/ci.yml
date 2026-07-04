@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: relay
+          POSTGRES_PASSWORD: relay
+          POSTGRES_DB: relay_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U relay -d relay_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      RELAY_DATABASE_URL: postgresql+psycopg://relay:relay@localhost:5432/relay_test
+      RELAY_APP_DATABASE_URL: postgresql+psycopg://relay_app:relay_app@localhost:5432/relay_test
+      RELAY_APP_DB_PASSWORD: relay_app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync dependencies
+        run: uv sync --all-groups
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Run tests (Phase 0 exit gate)
+        run: uv run pytest tests/ -v --tb=short
