@@ -10,8 +10,9 @@ send is *structurally impossible* — enforced by the database, not by
 good intentions.
 
 This repository currently implements **Phase 0 — Foundations &
-Scaffolding**, **Phase 1A — Synthetic dry-run MVP**, and **Phase 1B —
-Real-data, no-send pilot** of the
+Scaffolding**, **Phase 1A — Synthetic dry-run MVP**, **Phase 1B —
+Real-data, no-send pilot**, and **Phase 2 — Reliability, observability
+& evaluation** of the
 [development roadmap](RELAY-development-roadmap.md) (on the `Plan`
 branch, together with the full
 [project documentation](RELAY-project-documentation.md)): the pipeline
@@ -86,6 +87,24 @@ What Phase 1B still does NOT contain, by design: any real sending
 (Phase 1C: deliverability, provider approval, volume caps) — and the
 preflight *content* itself, which is a human/legal deliverable the
 system only records and enforces.
+
+---
+
+## What Phase 2 adds
+
+Make the proven pipeline trustworthy unattended, and measurable enough
+to change safely.
+
+| Capability | Where |
+| --- | --- |
+| **Resumability**: transient compute failures park leads in `error_retryable` (the failed step's transaction already rolled back — no partial work) and a later run resumes them; the DB trigger counts retries and enforces the cap; refusals park terminally for a human | `pipeline/runner.py` |
+| **Crash recovery on every tick**: orphaned runs get closed, orphaned mid-send jobs fail safe (outcome unknown ⇒ never retried, never assumed sent); idempotent, wired into the worker tick | `pipeline/recovery.py` |
+| **Rate limiting & backpressure**: token buckets per external target (compute tiers, CRM); waits beyond the cap raise visibly and park work; bounded exponential retry for *transient* failures only — refusals are never re-rolled and providers are never silently swapped | `ratelimit.py` |
+| **Observability**: `/metrics` (JSON) + `/metrics/prometheus`, all derived on read from rows the pipeline already writes; `/ops` self-contained dashboard; alert rules (spend spike, failure streak, stuck queue) with log + webhook sinks | `observability/`, `api/ops_ui.py` |
+| **Eval harness**: golden-set invariants through the real prompt scaffolding — opt-outs must triage `unsubscribed`, injections cannot raise scores or manufacture intent, copy respects bounds; `just evals` scores the *configured* backends; an injected regression is provably caught | `evals/`, `scripts/run_evals.py` |
+| **Adversarial suite**: duplicate-send chaos (racing workers), outbox atomicity, suppression bypass from every angle, webhook replays, CRM conflicts, cross-tenant erasure attempts, PII log sweep, and a pg_dump→restore test proving erasure survives backups | `tests/test_adversarial.py` |
+| **Unattended-run proof**: a simulated spine schedule converges a mixed cohort and further ticks change nothing | `tests/test_unattended.py` |
+| **§8 open item resolved**: the local tier stays structurally tool-free, with revisit criteria recorded | `docs/decisions/local-tool-calling.md` |
 
 ---
 
