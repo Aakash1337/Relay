@@ -85,6 +85,10 @@ api:
 worker:
     uv run relay-worker --once
 
+# Run one retention purge pass (deletes leads past retention_until)
+retention:
+    uv run relay-retention
+
 # Walk a synthetic lead through the entire state machine and print the trace
 demo:
     uv run python scripts/demo_journey.py

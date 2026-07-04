@@ -42,7 +42,7 @@ BEGIN
   FOREACH t IN ARRAY ARRAY[
     'lead_source_register', 'campaigns', 'leads', 'lead_transitions',
     'suppression', 'outreach_drafts', 'send_jobs', 'audit_log',
-    'pipeline_runs', 'replies', 'draft_reviews'
+    'pipeline_runs', 'replies', 'draft_reviews', 'data_preflight'
   ]
   LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
@@ -84,10 +84,13 @@ GRANT SELECT, INSERT, UPDATE ON pipeline_runs TO relay_app;
 GRANT SELECT, INSERT, UPDATE ON replies TO relay_app;
 -- Reviews are append-only for the app role: no UPDATE grant, by design.
 GRANT SELECT, INSERT ON draft_reviews TO relay_app;
+-- Preflight approval is an admin-path act (owner role); the app role only
+-- reads it — and the insert-guard trigger reads it under the app session.
+GRANT SELECT ON data_preflight TO relay_app;
 
--- No DELETE grants anywhere: Phase 0 has no deletion path. The DSR /
--- right-to-be-forgotten workflow (Phase 1B) will add a dedicated,
--- audited path — not a blanket grant.
+-- No DELETE grants anywhere. The only deletion capability the app role
+-- has is fn_dsr_erase (below): the dedicated, audited, tenant-guarded
+-- DSR/retention path — not a blanket grant.
 
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO relay_app;
 
@@ -100,3 +103,11 @@ GRANT EXECUTE ON FUNCTION fn_is_suppressed(uuid, text, text, uuid, text)
   TO relay_app;
 GRANT EXECUTE ON FUNCTION fn_tenant_id_for_api_key(text) TO relay_app;
 GRANT EXECUTE ON FUNCTION fn_tenants_with_queued_jobs() TO relay_app;
+
+-- DSR erasure: the app role's only deletion capability, tenant-guarded
+-- inside the function itself.
+REVOKE ALL ON FUNCTION fn_dsr_erase(uuid, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION fn_dsr_erase(uuid, text) TO relay_app;
+
+REVOKE ALL ON FUNCTION fn_tenants_with_expired_leads() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION fn_tenants_with_expired_leads() TO relay_app;

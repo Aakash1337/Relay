@@ -30,6 +30,7 @@ from relay.db.models import (
     SendJob,
     Tenant,
 )
+from relay.domain import dsr, preflight
 from relay.domain.approval import (
     ApprovalError,
     approve_draft,
@@ -217,6 +218,7 @@ def create_lead(
                 email_hash=hash_email(str(body.email)),
                 email_domain=email_domain(str(body.email)),
                 dry_run=body.dry_run,
+                retention_until=body.retention_until,
                 first_name=body.first_name,
                 last_name=body.last_name,
                 title=body.title,
@@ -497,6 +499,97 @@ def economics(
         cost_units_total=report.cost_units_total,
         cost_units_per_meeting=report.cost_units_per_meeting,
         cost_usd_per_meeting=report.cost_usd_per_meeting,
+    )
+
+
+# ── DSR erasure (tenant-scoped): the right to be forgotten ──────────────────
+
+
+@router.post("/dsr/erasure", response_model=schemas.ErasureResponse)
+def dsr_erasure(
+    body: schemas.ErasureRequest,
+    tenant_id: uuid.UUID = Depends(require_tenant),
+) -> schemas.ErasureResponse:
+    """Erase a person's data (datastore + CRM), leaving only the hashed
+    do-not-contact entry. Idempotent: erasing an unknown address still
+    records the suppression — a DSR is honored even for someone never
+    ingested."""
+    result = dsr.execute_erasure(
+        tenant_id, email=str(body.email), requested_by=body.requested_by
+    )
+    return schemas.ErasureResponse(
+        email_hash=result.email_hash,
+        lead_ids=[uuid.UUID(x) for x in result.lead_ids],
+        datastore=result.datastore,
+        crm=result.crm,
+        vector_store=result.vector_store,
+        suppression_added=result.suppression_added,
+    )
+
+
+# ── Internal: the Legal/Data Preflight gate (admin token) ───────────────────
+# Approval opens real-data ingestion for a tenant; it is deliberately NOT
+# reachable with a tenant API key — the gate is operated by whoever owns
+# compliance, above any single tenant integration.
+
+
+@router.post(
+    "/internal/preflight/approve",
+    response_model=schemas.PreflightStatusResponse,
+    dependencies=[Depends(require_admin)],
+)
+def preflight_approve(
+    body: schemas.PreflightApproveRequest,
+) -> schemas.PreflightStatusResponse:
+    try:
+        preflight.approve(
+            body.tenant_id,
+            artifact_sha256=body.artifact_sha256.lower(),
+            approved_by=body.approved_by,
+            artifact_ref=body.artifact_ref,
+            notes=body.notes,
+        )
+    except (preflight.PreflightError, IntegrityError) as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    return _preflight_status(body.tenant_id)
+
+
+@router.post(
+    "/internal/preflight/revoke",
+    response_model=schemas.PreflightStatusResponse,
+    dependencies=[Depends(require_admin)],
+)
+def preflight_revoke(
+    body: schemas.PreflightRevokeRequest,
+) -> schemas.PreflightStatusResponse:
+    try:
+        preflight.revoke(body.tenant_id, revoked_by=body.revoked_by, reason=body.reason)
+    except preflight.PreflightError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    return _preflight_status(body.tenant_id)
+
+
+@router.get(
+    "/internal/preflight/{tenant_id}",
+    response_model=schemas.PreflightStatusResponse,
+    dependencies=[Depends(require_admin)],
+)
+def preflight_status(tenant_id: uuid.UUID) -> schemas.PreflightStatusResponse:
+    return _preflight_status(tenant_id)
+
+
+def _preflight_status(tenant_id: uuid.UUID) -> schemas.PreflightStatusResponse:
+    record = preflight.get_record(tenant_id)
+    if record is None:
+        return schemas.PreflightStatusResponse(tenant_id=tenant_id, approved=False)
+    return schemas.PreflightStatusResponse(
+        tenant_id=tenant_id,
+        approved=record.revoked_at is None,
+        artifact_sha256=record.artifact_sha256,
+        artifact_ref=record.artifact_ref,
+        approved_by=record.approved_by,
+        approved_at=record.approved_at,
+        revoked_at=record.revoked_at,
     )
 
 

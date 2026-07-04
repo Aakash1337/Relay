@@ -76,6 +76,18 @@ class EspoCRM:
         log.info("espo lead upserted", espo_id=espo_id, state=snapshot.state)
         return espo_id
 
+    def delete_lead(self, external_ref: str) -> bool:
+        espo_id = self._find(external_ref)
+        if espo_id is None:
+            return False
+        try:
+            resp = self._client.delete(f"/Lead/{espo_id}")
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise CRMError(f"espo delete failed: {exc}") from exc
+        log.info("espo lead deleted", espo_id=espo_id)
+        return True
+
     def record_event(self, external_ref: str, kind: str, detail: str) -> None:
         espo_id = self._find(external_ref)
         if espo_id is None:

@@ -10,12 +10,14 @@ send is *structurally impossible* — enforced by the database, not by
 good intentions.
 
 This repository currently implements **Phase 0 — Foundations &
-Scaffolding** and **Phase 1A — Synthetic dry-run MVP** of the
+Scaffolding**, **Phase 1A — Synthetic dry-run MVP**, and **Phase 1B —
+Real-data, no-send pilot** of the
 [development roadmap](RELAY-development-roadmap.md) (on the `Plan`
 branch, together with the full
 [project documentation](RELAY-project-documentation.md)): the pipeline
-runs end to end on synthetic data with real reasoning seams — still no
-real PII and no real send path (those are gated behind Phases 1B/1C).
+runs end to end with real reasoning seams; real-person data is gated
+behind a recorded Legal/Data Preflight, and the send path stays
+structurally closed for it until Phase 1C.
 
 ---
 
@@ -64,6 +66,26 @@ Injection-hostile inputs are part of the synthetic corpus on purpose:
 the exit tests assert a hostile bio changes nothing about the gates and
 a hostile reply can only ever move triage toward *less* contact
 (`unsubscribed`), never more.
+
+---
+
+## What Phase 1B adds
+
+Real people's data may now enter — behind a recorded gate, with a full
+exit door.
+
+| Capability | Where |
+| --- | --- |
+| **Legal/Data Preflight gate**: a lead whose `lawful_basis` is anything but `synthetic`/`test_consent` is rejected at INSERT (DB trigger) unless the tenant has an approved, unrevoked preflight record pinned to the artifact's SHA-256. Approve/revoke/status via admin endpoints | `docs/legal-data-preflight.md` (template), `data_preflight` table, `/internal/preflight/*` |
+| **Real-data ingestion rules**: real-basis leads must carry `retention_until` and a real deliverable domain (reserved/test TLDs rejected); enforced at the API boundary (422) *and* in the trigger (raw SQL included) | `fn_lead_insert_guard`, `LeadCreateRequest` |
+| **Send path closed for real people**: a real-basis lead flows source → score → draft → human gate, but no send job can exist for it in ANY mode — blocked at the eligibility gate and again by `fn_send_jobs_guard`. Phase 1C opens this behind its own gates | `eligibility.py`, `fn_send_jobs_guard` |
+| **DSR erasure** (right to be forgotten): `POST /dsr/erasure` deletes every row carrying the person's data (lead, drafts, reviews, replies, send jobs, transitions) via `fn_dsr_erase` — the app role's *only* delete capability, tenant-guarded in SQL — removes the CRM mirror, and leaves exactly one thing behind: a hashed do-not-contact suppression entry. Suppression-first, same transaction | `src/relay/domain/dsr.py`, `fn_dsr_erase` |
+| **Retention purge**: `just retention` / `relay-retention` deletes leads past `retention_until` through the same audited path — without fabricating a suppression entry (expiry is not an opt-out) | `src/relay/workers/retention_worker.py` |
+
+What Phase 1B still does NOT contain, by design: any real sending
+(Phase 1C: deliverability, provider approval, volume caps) — and the
+preflight *content* itself, which is a human/legal deliverable the
+system only records and enforces.
 
 ---
 

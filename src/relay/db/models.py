@@ -526,6 +526,48 @@ class SendJob(Base):
     completed_at: Mapped[datetime | None] = mapped_column()
 
 
+class DataPreflight(Base):
+    """The Legal/Data Preflight record — the Phase 1B gate, per tenant.
+
+    Approval is recorded, never implied: the lead-insert trigger refuses
+    any real-lawful-basis row for a tenant without an unrevoked row here.
+    The artifact itself (jurisdiction matrix, lawful-basis model,
+    controller/processor role, provenance rules, privacy notice,
+    retention policy, DSR workflow, allowed-source list) lives outside
+    the database; this row pins its exact content by hash so "what was
+    approved" is always answerable.
+    """
+
+    __tablename__ = "data_preflight"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id"), primary_key=True
+    )
+    #: SHA-256 of the approved artifact document — content-addressed approval.
+    artifact_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Where the artifact lives (repo path, DMS link, …).
+    artifact_ref: Mapped[str | None] = mapped_column(Text)
+    approved_by: Mapped[str] = mapped_column(Text, nullable=False)
+    approved_at: Mapped[datetime] = mapped_column(
+        nullable=False, server_default=text("now()")
+    )
+    notes: Mapped[str | None] = mapped_column(Text)
+    #: Set to withdraw the approval; the gate closes immediately.
+    revoked_at: Mapped[datetime | None] = mapped_column()
+    revoked_by: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (
+        CheckConstraint(
+            "char_length(artifact_sha256) = 64", name="ck_preflight_sha256_len"
+        ),
+        # Revocation is all-or-nothing: both fields or neither.
+        CheckConstraint(
+            "(revoked_at IS NULL) = (revoked_by IS NULL)",
+            name="ck_preflight_revocation_pair",
+        ),
+    )
+
+
 class Reply(Base):
     """An inbound reply to an outreach send.
 
