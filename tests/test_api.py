@@ -55,13 +55,13 @@ def _setup_chain(client, tenant) -> tuple[str, str]:
     return source["id"], campaign["id"]
 
 
-def _create_lead(client, tenant, source_id, campaign_id) -> dict:
+def _create_lead(client, tenant, source_id, campaign_id, email=None) -> dict:
     response = client.post(
         "/leads",
         json={
             "campaign_id": campaign_id,
             "source_id": source_id,
-            "email": f"lead-{uuid.uuid4().hex[:8]}@example.test",
+            "email": email or f"lead-{uuid.uuid4().hex[:8]}@example.test",
             "lawful_basis": "synthetic",
             "region_assumption": "none-synthetic",
         },
@@ -99,7 +99,11 @@ def test_invalid_api_key_rejected(client):
 
 def test_full_journey_over_http(client, api_tenant):
     source_id, campaign_id = _setup_chain(client, api_tenant)
-    lead = _create_lead(client, api_tenant, source_id, campaign_id)
+    # Fixed email whose hash-derived reply persona is 'interested' — the
+    # journey asserts the booking branch, so the persona must cooperate.
+    lead = _create_lead(
+        client, api_tenant, source_id, campaign_id, email="journey-3@example.test"
+    )
     auth = _auth(api_tenant)
 
     # Run to the human gate.

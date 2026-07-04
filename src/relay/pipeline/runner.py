@@ -26,21 +26,46 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from relay.compute.prompting import UNTRUSTED_KEY
+from relay.config import get_settings
+from relay.crm.sync import sync_lead
 from relay.db.engine import tenant_session
 from relay.db.models import (
     Campaign,
     Lead,
     OutreachDraft,
+    Reply,
     SendJob,
     build_idempotency_key,
 )
 from relay.domain import eligibility
 from relay.domain.state_machine import transition
 from relay.domain.states import TERMINAL_STATES, LeadState
+from relay.domain.vocab import TriageCategory
 from relay.guardrails.harness import GuardrailViolation, RunHarness
 from relay.logs import bind_run_context, clear_run_context, get_logger
 from relay.routing.executors import execute
 from relay.routing.router import TaskType
+
+
+def _prospect_payload(lead: Lead) -> dict:
+    """Build a task payload from a lead, §11-safe by construction.
+
+    Short structured identity fields travel as trusted context (they are
+    validated, length-bounded columns); all free prospect-authored text —
+    today the bio — goes under UNTRUSTED_KEY so the prompt scaffolding
+    wraps it as provenance-labeled inert data.
+    """
+    payload: dict = {
+        "first_name": lead.first_name,
+        "last_name": lead.last_name,
+        "title": lead.title,
+        "company": lead.company_name,
+        "company_domain": lead.company_domain,
+    }
+    if lead.bio:
+        payload[UNTRUSTED_KEY] = {"prospect_bio": lead.bio}
+    return payload
 
 log = get_logger(__name__)
 
@@ -104,6 +129,9 @@ class PipelineRunner:
                     continue
                 stopped_on = self._stop_reason(state)
                 self.harness.complete(detail=f"stopped: {stopped_on}")
+                # Mirror to the CRM after the run, outside any step
+                # transaction — best-effort by contract, never a gate.
+                sync_lead(self.tenant_id, self.lead_id, context="pipeline_run")
                 return RunOutcome(
                     run_id=self.harness.run_id,
                     lead_id=self.lead_id,
@@ -184,7 +212,7 @@ class PipelineRunner:
 
     def _step_enrich(self, session: Session, lead: Lead) -> None:
         self.harness.tick("enrich")
-        execute(TaskType.ENRICHMENT, harness=self.harness)
+        execute(TaskType.ENRICHMENT, _prospect_payload(lead), harness=self.harness)
         transition(
             session,
             lead,
@@ -229,14 +257,31 @@ class PipelineRunner:
 
     def _step_score(self, session: Session, lead: Lead) -> None:
         self.harness.tick("score")
-        result = execute(TaskType.FIT_SCORING, harness=self.harness)
-        lead.fit_score = result.output["fit_score"]
+        result = execute(
+            TaskType.FIT_SCORING, _prospect_payload(lead), harness=self.harness
+        )
+        score = float(result.output["fit_score"])
+        # Defensive clamp: a backend cannot buy extra qualification by
+        # returning 7.3 — scores live in [0, 1].
+        score = min(max(score, 0.0), 1.0)
+        lead.fit_score = score
+        threshold = get_settings().fit_score_threshold
+        if score < threshold:
+            transition(
+                session,
+                lead,
+                LeadState.SCORED_REJECTED,
+                actor=ACTOR,
+                reason=f"fit score {score} below threshold {threshold}",
+                run_id=self.harness.run_id,
+            )
+            return
         transition(
             session,
             lead,
             LeadState.SCORED_QUALIFIED,
             actor=ACTOR,
-            reason=f"stub fit score {result.output['fit_score']}",
+            reason=f"fit score {score} >= threshold {threshold}",
             run_id=self.harness.run_id,
         )
 
@@ -252,7 +297,9 @@ class PipelineRunner:
 
     def _step_personalize(self, session: Session, lead: Lead) -> None:
         self.harness.tick("personalize")
-        result = execute(TaskType.OUTREACH_COPY, harness=self.harness)
+        result = execute(
+            TaskType.OUTREACH_COPY, _prospect_payload(lead), harness=self.harness
+        )
         next_version = (
             session.execute(
                 select(func.coalesce(func.max(OutreachDraft.version), 0)).where(
@@ -388,20 +435,58 @@ class PipelineRunner:
         session.flush()
 
     def _step_after_sent(self, session: Session, lead: Lead) -> None:
-        """Simulated reply capture — only in explicit seed/test mode."""
-        self.harness.tick("simulate_reply")
-        campaign = session.get(Campaign, lead.campaign_id)
-        assert campaign is not None
-        if not campaign.simulated_replies_enabled:
-            # Nothing to do; a real reply would arrive via webhook later.
-            raise _NoProgress
+        """Reply capture. Simulated mode generates one; an existing
+        untriaged reply (webhook-ingested or pre-seeded) is used as-is."""
+        self.harness.tick("capture_reply")
+        existing = (
+            session.execute(
+                select(Reply).where(
+                    Reply.tenant_id == lead.tenant_id,
+                    Reply.lead_id == lead.id,
+                    Reply.triage_category.is_(None),
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if existing is None:
+            campaign = session.get(Campaign, lead.campaign_id)
+            assert campaign is not None
+            if not campaign.simulated_replies_enabled:
+                # Nothing to do; a real reply would arrive via webhook later.
+                raise _NoProgress
+            from relay.synthetic.generator import simulated_reply_text
+            from relay.synthetic.seed import intent_for_lead
+
+            job = session.execute(
+                select(SendJob).where(
+                    SendJob.lead_id == lead.id, SendJob.status == "sent"
+                )
+            ).scalar_one_or_none()
+            if job is None:
+                raise _NoProgress  # sent state but job not finalized yet
+            intent = intent_for_lead(lead)
+            session.add(
+                Reply(
+                    tenant_id=lead.tenant_id,
+                    lead_id=lead.id,
+                    campaign_id=lead.campaign_id,
+                    send_job_id=job.id,
+                    simulated=True,
+                    subject="Re: your note",
+                    body=simulated_reply_text(
+                        intent, variant=int(lead.email_hash[8], 16)
+                    ),
+                )
+            )
+            session.flush()
         lead.replied_at = datetime.now(tz=UTC)
         transition(
             session,
             lead,
             LeadState.REPLY_RECEIVED,
             actor=ACTOR,
-            reason="simulated reply (seed/test mode)",
+            reason="simulated reply" if existing is None else "reply on record",
             run_id=self.harness.run_id,
         )
 
@@ -416,20 +501,57 @@ class PipelineRunner:
         )
 
     def _step_triage(self, session: Session, lead: Lead) -> None:
+        """Triage the actual reply text — the body is prospect-authored and
+        enters the prompt only under UNTRUSTED_KEY (§11)."""
         self.harness.tick("triage")
-        result = execute(TaskType.REPLY_TRIAGE, harness=self.harness)
-        category = result.output["category"]
+        reply = (
+            session.execute(
+                select(Reply)
+                .where(
+                    Reply.tenant_id == lead.tenant_id,
+                    Reply.lead_id == lead.id,
+                    Reply.triage_category.is_(None),
+                )
+                .order_by(Reply.received_at)
+            )
+            .scalars()
+            .first()
+        )
+        if reply is None:
+            raise LookupError("lead in triage_pending has no untriaged reply")
+
+        untrusted = {"reply_body": reply.body}
+        if reply.subject:
+            untrusted["reply_subject"] = reply.subject
+        result = execute(
+            TaskType.REPLY_TRIAGE,
+            {UNTRUSTED_KEY: untrusted},
+            harness=self.harness,
+        )
+        raw_category = str(result.output["category"])
+        try:
+            category = TriageCategory(raw_category)
+        except ValueError:
+            # A backend inventing categories does not get to steer the
+            # state machine. Opt-out is the safe direction (§10).
+            log.warning("triage returned unknown category", category=raw_category)
+            category = TriageCategory.UNSUBSCRIBED
+        confidence = result.output.get("confidence")
+        reply.triage_category = str(category)
+        if isinstance(confidence, int | float):
+            reply.triage_confidence = min(max(float(confidence), 0.0), 1.0)
+
         target = {
-            "interested": LeadState.INTERESTED,
-            "not_interested": LeadState.NOT_INTERESTED,
-            "unsubscribed": LeadState.UNSUBSCRIBED,
+            TriageCategory.INTERESTED: LeadState.INTERESTED,
+            TriageCategory.NOT_INTERESTED: LeadState.NOT_INTERESTED,
+            TriageCategory.UNSUBSCRIBED: LeadState.UNSUBSCRIBED,
         }[category]
         transition(
             session,
             lead,
             target,
             actor=ACTOR,
-            reason=f"stub triage: {category}",
+            reason=f"reply triaged: {category}",
             run_id=self.harness.run_id,
         )
 

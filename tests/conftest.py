@@ -225,5 +225,11 @@ def walk_to_sent(tenant_id: uuid.UUID, lead_id: uuid.UUID) -> None:
 
 def walk_to_closed(tenant_id: uuid.UUID, lead_id: uuid.UUID) -> None:
     walk_to_sent(tenant_id, lead_id)
+    # Pin the reply intent: the hash-derived persona could just as well
+    # decline or unsubscribe, and this helper promises 'closed'.
+    from relay.synthetic.generator import ReplyIntent
+    from relay.synthetic.seed import create_simulated_reply
+
+    create_simulated_reply(tenant_id, lead_id, intent=ReplyIntent.INTERESTED)
     outcome = PipelineRunner(tenant_id, lead_id=lead_id).run()
     assert outcome.final_state == "closed", outcome

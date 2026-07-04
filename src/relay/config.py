@@ -68,6 +68,19 @@ class Settings(BaseSettings):
     compute_timeout_seconds: float = Field(default=60.0, gt=0)
     compute_max_output_tokens: int = Field(default=1024, ge=64)
 
+    # ── Pipeline decision thresholds (Phase 1A) ─────────────────────────────
+    # Leads scoring below this are scored_rejected. Default sits below the
+    # offline backend's floor (0.35) so hermetic runs qualify by default;
+    # raise it per deployment to make the gate bite.
+    fit_score_threshold: float = Field(default=0.3, ge=0, le=1)
+
+    # ── CRM sync seam (Phase 1A) ────────────────────────────────────────────
+    # 'none' disables sync entirely; 'memory' is the hermetic in-process
+    # adapter (tests/dev); 'espo' targets an EspoCRM instance.
+    crm_backend: Literal["none", "memory", "espo"] = "none"
+    espo_base_url: str = ""
+    espo_api_key: SecretStr | None = None
+
     # ── Tenancy primitives ──────────────────────────────────────────────────
     # Dev default only; production uses a KMS-managed key (Phase 3).
     master_key: SecretStr = SecretStr("dev-master-key-not-for-production")
