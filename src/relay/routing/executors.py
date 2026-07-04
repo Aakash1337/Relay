@@ -13,12 +13,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from relay.compute.base import require_fields
+from relay.compute.base import ComputeUnavailable, require_fields
 from relay.compute.prompting import build_request
 from relay.compute.registry import backend_for
 from relay.config import get_settings
 from relay.guardrails.harness import RunHarness
 from relay.logs import get_logger
+from relay.ratelimit import limit_compute, with_backoff
 from relay.routing.router import ComputeTier, RoutingDecision, TaskType, route
 
 log = get_logger(__name__)
@@ -63,7 +64,18 @@ def execute(
     cost = _stub_cost(decision)
     # Bill BEFORE producing output: an over-budget task never runs.
     harness.spend(cost, what=str(task_type))
-    response = backend.complete(request)
+    settings = get_settings()
+    # Backpressure before the call; bounded backoff around it — transient
+    # failures only. A refusal or bad output is never re-rolled, and a
+    # failing tier is never silently swapped for another.
+    limit_compute(str(decision.tier))
+    response = with_backoff(
+        lambda: backend.complete(request),
+        attempts=settings.compute_retry_attempts,
+        base_seconds=settings.compute_retry_base_seconds,
+        retry_on=(ComputeUnavailable,),
+        what=f"{backend.name}:{task_type}",
+    )
     require_fields(response.output, request.output_fields, backend=backend.name)
     log.info(
         "task executed",

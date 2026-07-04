@@ -44,21 +44,32 @@ class _RefusingBackend(OfflineBackend):
         return super().complete(request)
 
 
-@pytest.fixture
-def _flaky(monkeypatch):
-    """Install a backend that fails OUTREACH_COPY exactly once."""
+# ── Transient failure: absorb blips, park sustained outages ────────────────
+
+
+def test_single_blip_is_absorbed_by_bounded_retry(tenant_a, factory_a, monkeypatch):
+    """One transient failure never reaches the state machine: the bounded
+    backoff inside execute() absorbs it and the run proceeds normally."""
+    tenant_id, _ = tenant_a
     backend = _FlakyBackend(TaskType.OUTREACH_COPY, times=1)
     monkeypatch.setattr("relay.routing.executors.backend_for", lambda tier: backend)
-    return backend
-
-
-# ── Transient failure: park, resume, no duplicated work ────────────────────
+    lead_id = factory_a.lead()
+    outcome = PipelineRunner(tenant_id, lead_id=lead_id).run()
+    assert outcome.stopped_on == "waiting_human"  # no park
+    assert backend.attempts == 1  # it did fail once — and was retried
+    with tenant_session(tenant_id) as session:
+        lead = session.get(Lead, lead_id)
+        assert lead is not None and lead.retry_count == 0
 
 
 def test_transient_failure_parks_then_resumes_without_duplicates(
-    tenant_a, factory_a, _flaky
+    tenant_a, factory_a, monkeypatch
 ):
     tenant_id, _ = tenant_a
+    # The outage outlasts the in-call retry budget (1 initial + 2 retries)
+    # then clears: run 1 parks the lead, run 2 resumes and completes.
+    backend = _FlakyBackend(TaskType.OUTREACH_COPY, times=3)
+    monkeypatch.setattr("relay.routing.executors.backend_for", lambda tier: backend)
     lead_id = factory_a.lead()
 
     # First run: the outage hits during personalization → parked retryable.

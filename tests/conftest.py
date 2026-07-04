@@ -27,6 +27,9 @@ os.environ.setdefault("RELAY_LOCAL_MODEL", "")
 os.environ.setdefault("RELAY_HOSTED_MODEL", "")
 os.environ.setdefault("RELAY_GOOGLE_API_KEY", "")
 os.environ.setdefault("RELAY_ANTHROPIC_API_KEY", "")
+# Retries stay ON in tests (the absorption path is under test) but with
+# near-zero backoff so the suite stays fast. Rate limits default to 0.
+os.environ.setdefault("RELAY_COMPUTE_RETRY_BASE_SECONDS", "0.01")
 os.environ.setdefault("RELAY_CRM_BACKEND", "none")
 os.environ.setdefault("RELAY_FIT_SCORE_THRESHOLD", "0.3")
 os.environ.setdefault("RELAY_COMPUTE_MAX_OUTPUT_TOKENS", "1024")
