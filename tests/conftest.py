@@ -17,6 +17,19 @@ os.environ.setdefault(
     "postgresql+psycopg://relay_app:relay_app@127.0.0.1:5433/relay_test",
 )
 os.environ.setdefault("RELAY_ADMIN_TOKEN", "test-admin-token")
+# Hermeticity: a developer's .env may point the compute tiers at real
+# providers (Gemini/Gemma/Claude) — tests must never inherit that.
+# Environment variables outrank the .env file for pydantic-settings, so
+# these pins win over any local configuration.
+os.environ.setdefault("RELAY_COMPUTE_LOCAL_BACKEND", "offline")
+os.environ.setdefault("RELAY_COMPUTE_HOSTED_BACKEND", "offline")
+os.environ.setdefault("RELAY_LOCAL_MODEL", "")
+os.environ.setdefault("RELAY_HOSTED_MODEL", "")
+os.environ.setdefault("RELAY_GOOGLE_API_KEY", "")
+os.environ.setdefault("RELAY_ANTHROPIC_API_KEY", "")
+os.environ.setdefault("RELAY_CRM_BACKEND", "none")
+os.environ.setdefault("RELAY_FIT_SCORE_THRESHOLD", "0.3")
+os.environ.setdefault("RELAY_COMPUTE_MAX_OUTPUT_TOKENS", "1024")
 
 import pytest  # noqa: E402
 from sqlalchemy import select  # noqa: E402

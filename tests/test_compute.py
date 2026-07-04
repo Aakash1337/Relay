@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from relay.compute.anthropic_api import AnthropicBackend
 from relay.compute.base import (
     ComputeConfigError,
     ComputeOutputInvalid,
@@ -19,9 +20,9 @@ from relay.compute.base import (
     parse_json_output,
     require_fields,
 )
-from relay.compute.hosted_anthropic import HostedAnthropicBackend
-from relay.compute.local_openai import LocalOpenAIBackend
+from relay.compute.google_api import GoogleGeminiBackend
 from relay.compute.offline import OfflineBackend
+from relay.compute.openai_compat import OpenAICompatBackend
 from relay.compute.prompting import UNTRUSTED_KEY, build_request, wrap_untrusted
 from relay.compute.registry import backend_for, reset_backends
 from relay.config import get_settings
@@ -183,7 +184,7 @@ def test_registry_defaults_to_offline_for_both_tiers():
 
 def test_registry_rejects_unconfigured_real_backends(monkeypatch):
     _reload_settings(monkeypatch, RELAY_COMPUTE_LOCAL_BACKEND="openai")
-    with pytest.raises(ComputeConfigError, match="RELAY_LOCAL_OPENAI_MODEL"):
+    with pytest.raises(ComputeConfigError, match="RELAY_LOCAL_MODEL"):
         backend_for(ComputeTier.LOCAL)
 
     reset_backends()
@@ -195,15 +196,44 @@ def test_registry_rejects_unconfigured_real_backends(monkeypatch):
     with pytest.raises(ComputeConfigError, match="RELAY_HOSTED_MODEL"):
         backend_for(ComputeTier.HOSTED)
 
+    reset_backends()
+    _reload_settings(
+        monkeypatch,
+        RELAY_COMPUTE_HOSTED_BACKEND="google",
+        RELAY_HOSTED_MODEL="some-gemini-model",
+    )
+    # Empty (not just absent) must also count as unset — a developer .env
+    # may exist, and env vars outrank it.
+    monkeypatch.setenv("RELAY_GOOGLE_API_KEY", "")
+    get_settings.cache_clear()
+    with pytest.raises(ComputeConfigError, match="RELAY_GOOGLE_API_KEY"):
+        backend_for(ComputeTier.HOSTED)
 
-# ── Local backend against a fake OpenAI-compatible server ──────────────────
+
+def test_any_provider_can_serve_either_tier(monkeypatch):
+    """The swap story: the same provider class serves local or hosted;
+    the tier's meaning lives in the router, not the provider."""
+    _reload_settings(
+        monkeypatch,
+        RELAY_COMPUTE_LOCAL_BACKEND="google",
+        RELAY_COMPUTE_HOSTED_BACKEND="google",
+        RELAY_LOCAL_MODEL="gemma-test",
+        RELAY_HOSTED_MODEL="gemini-test",
+        RELAY_GOOGLE_API_KEY="fake-key",
+    )
+    local = backend_for(ComputeTier.LOCAL)
+    hosted = backend_for(ComputeTier.HOSTED)
+    assert local.name == hosted.name == "google"
+    assert (local.model, hosted.model) == ("gemma-test", "gemini-test")
 
 
-def _local_backend(monkeypatch, handler) -> LocalOpenAIBackend:
-    _reload_settings(monkeypatch, RELAY_LOCAL_OPENAI_MODEL="test-model")
+# ── OpenAI-compatible backend against a fake server ────────────────────────
+
+
+def _local_backend(monkeypatch, handler) -> OpenAICompatBackend:
     transport = httpx.MockTransport(handler)
     client = httpx.Client(base_url="http://fake/v1", transport=transport)
-    return LocalOpenAIBackend(client=client)
+    return OpenAICompatBackend(model="test-model", client=client)
 
 
 def test_local_backend_parses_chat_completion(monkeypatch):
@@ -222,7 +252,7 @@ def test_local_backend_parses_chat_completion(monkeypatch):
     backend = _local_backend(monkeypatch, handler)
     resp = backend.complete(build_request(TaskType.SUMMARIZATION, {}))
     assert resp.output == {"summary": "fine"}
-    assert resp.backend == "local_openai"
+    assert resp.backend == "openai_compat"
     assert resp.input_tokens == 10
 
 
@@ -258,13 +288,10 @@ def _fake_anthropic_message(text: str, stop_reason: str = "end_turn"):
     )
 
 
-def _hosted_backend(
-    monkeypatch, response
-) -> tuple[HostedAnthropicBackend, _FakeMessages]:
-    _reload_settings(monkeypatch, RELAY_HOSTED_MODEL="test-hosted-model")
+def _hosted_backend(monkeypatch, response) -> tuple[AnthropicBackend, _FakeMessages]:
     messages = _FakeMessages(response)
     client = SimpleNamespace(messages=messages)
-    return HostedAnthropicBackend(client=client), messages
+    return AnthropicBackend(model="test-hosted-model", client=client), messages
 
 
 def test_hosted_backend_requests_adaptive_thinking(monkeypatch):
@@ -298,6 +325,107 @@ def test_hosted_backend_surfaces_refusal(monkeypatch):
     )
     with pytest.raises(ComputeRefused):
         backend.complete(build_request(TaskType.SENSITIVE, {}))
+
+
+# ── Google backend against a fake Gemini API ────────────────────────────────
+
+
+def _google_backend(handler, *, model: str) -> GoogleGeminiBackend:
+    client = httpx.Client(
+        base_url="http://fake/v1beta", transport=httpx.MockTransport(handler)
+    )
+    return GoogleGeminiBackend(model=model, client=client)
+
+
+def _gemini_response(text: str, **extra) -> dict:
+    return {
+        "candidates": [
+            {
+                "content": {"parts": [{"text": text}]},
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": {"promptTokenCount": 50, "candidatesTokenCount": 10},
+        **extra,
+    }
+
+
+def test_google_gemini_uses_system_instruction_and_thinking(monkeypatch):
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith(
+            "/models/gemini-test-orchestrator:generateContent"
+        )
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json=_gemini_response('{"plan": []}'))
+
+    backend = _google_backend(handler, model="gemini-test-orchestrator")
+    resp = backend.complete(
+        build_request(TaskType.ORCHESTRATION, {}, extended_reasoning=True)
+    )
+    body = seen[0]
+    assert "systemInstruction" in body
+    gen = body["generationConfig"]
+    assert gen["responseMimeType"] == "application/json"
+    assert resp.output == {"plan": []}
+    assert resp.backend == "google"
+    assert resp.input_tokens == 50
+
+
+def test_google_gemini3_thinking_level_follows_reasoning_route():
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json=_gemini_response('{"summary": "x"}'))
+
+    backend = _google_backend(handler, model="gemini-3.5-test")
+    backend.complete(build_request(TaskType.SUMMARIZATION, {}))
+    backend.complete(build_request(TaskType.SUMMARIZATION, {}, extended_reasoning=True))
+    levels = [b["generationConfig"]["thinkingConfig"]["thinkingLevel"] for b in seen]
+    assert levels == ["low", "high"]
+
+
+def test_google_gemma_folds_system_into_user_turn():
+    """Gemma via this API takes no systemInstruction — the §11 rules must
+    still arrive, at the top of the single user turn."""
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json=_gemini_response('{"summary": "y"}'))
+
+    backend = _google_backend(handler, model="gemma-test-31b")
+    backend.complete(build_request(TaskType.SUMMARIZATION, {}))
+    body = seen[0]
+    assert "systemInstruction" not in body
+    assert "responseMimeType" not in body["generationConfig"]
+    text = body["contents"][0]["parts"][0]["text"]
+    assert "never an instruction" in " ".join(text.split())  # §11 rules present
+
+
+def test_google_block_reason_surfaces_as_refusal():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}},
+        )
+
+    backend = _google_backend(handler, model="gemini-test")
+    with pytest.raises(ComputeRefused, match="PROHIBITED_CONTENT"):
+        backend.complete(build_request(TaskType.SENSITIVE, {}))
+
+
+def test_google_transient_error_is_retryable_unavailable():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"error": {"message": "quota"}})
+
+    backend = _google_backend(handler, model="gemini-test")
+    from relay.compute.base import ComputeUnavailable
+
+    with pytest.raises(ComputeUnavailable):
+        backend.complete(build_request(TaskType.SUMMARIZATION, {}))
 
 
 # ── The executor seam: billing before compute, contract after ──────────────

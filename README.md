@@ -49,7 +49,7 @@ reasoning stubs land in Phase 1A), CRM sync, and the approval UI.
 
 | Capability | Where |
 | --- | --- |
-| Compute backends behind the routing seam: `offline` (deterministic, hermetic — the default), `openai`-compatible local tier (Ollama/vLLM), `anthropic` hosted tier (Claude API, adaptive thinking, effort raised on extended-reasoning routes) | `src/relay/compute/` |
+| Compute backends behind the routing seam — each tier picks a provider + model in `.env`, independently: `offline` (deterministic, hermetic — the default), `openai`-compatible (Ollama/vLLM), `google` (Gemini API: Gemini *and* Gemma models, thinking-part aware), `anthropic` (Claude API, adaptive thinking). Swapping the orchestrator or workhorse model is config, never code | `src/relay/compute/` |
 | §11 prompt scaffolding: every piece of prospect-authored text enters prompts entity-escaped inside a provenance-labeled `<untrusted_data>` block; a bio saying "ignore previous instructions" is data, not instruction | `src/relay/compute/prompting.py` |
 | No silent fallback: backends are chosen by `RELAY_COMPUTE_*` config only; a misconfigured real backend fails loudly instead of quietly degrading | `src/relay/compute/registry.py` |
 | Synthetic prospects (Faker, seeded, all at `.test` domains) with documented edge cases: prompt-injection bios, unicode names, oversized bios, sparse records, plus-addressing | `src/relay/synthetic/` |
@@ -161,6 +161,21 @@ All configuration is environment-driven (pydantic-settings, `RELAY_`
 prefix) — see `.env.example`. No secrets in code; API keys are stored
 as SHA-256 hashes; per-tenant encryption keys derive from a master key
 (KMS-managed in production, Phase 3).
+
+The two compute tiers are provider-agnostic. A typical dev pairing —
+Gemini Flash orchestrating over a Gemma workhorse, both on one Google
+API key:
+
+```bash
+RELAY_COMPUTE_HOSTED_BACKEND=google   RELAY_HOSTED_MODEL=gemini-3.5-flash
+RELAY_COMPUTE_LOCAL_BACKEND=google    RELAY_LOCAL_MODEL=gemma-4-31b-it
+RELAY_GOOGLE_API_KEY=...
+```
+
+Swapping the orchestrator to a Claude model later is three lines:
+`RELAY_COMPUTE_HOSTED_BACKEND=anthropic`, `RELAY_HOSTED_MODEL=<model>`,
+`RELAY_ANTHROPIC_API_KEY=<key>`. The test suite never touches real
+providers regardless of your `.env` — conftest pins both tiers offline.
 
 Two database roles: the schema-owning admin role runs migrations
 (`just db-migrate`); the API and worker run as `relay_app`, a
