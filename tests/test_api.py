@@ -189,3 +189,39 @@ def test_guardrail_kill_surfaces_as_conflict(client, api_tenant):
     )
     assert response.status_code == 409
     assert "guardrail" in response.json()["detail"]
+
+
+def test_illegal_reject_returns_409_not_500(client, api_tenant):
+    """A draft is pending_approval but its lead was left at draft_ready by a
+    guardrail kill: rejecting it is an illegal lead transition and must
+    surface as a 409, not an unhandled 500."""
+    source_id, campaign_id = _setup_chain(client, api_tenant)
+    lead = _create_lead(client, api_tenant, source_id, campaign_id)
+    auth = _auth(api_tenant)
+    # max_iterations=9 kills just after the draft becomes ready (the lead
+    # stays at draft_ready with a pending_approval draft).
+    killed = client.post(
+        f"/leads/{lead['id']}/pipeline/run",
+        json={"max_iterations": 9},
+        headers=auth,
+    )
+    assert killed.status_code == 409
+
+    from sqlalchemy import select
+
+    from relay.db.engine import tenant_session
+    from relay.db.models import Lead, OutreachDraft
+
+    with tenant_session(uuid.UUID(api_tenant["id"])) as session:
+        draft = session.execute(select(OutreachDraft)).scalar_one()
+        lead_row = session.get(Lead, uuid.UUID(lead["id"]))
+        assert draft.status == "pending_approval"
+        assert lead_row is not None and lead_row.state == "draft_ready"
+        draft_id = draft.id
+
+    rejected = client.post(
+        f"/outreach-drafts/{draft_id}/reject",
+        json={"approver": "reviewer", "reason": "changed my mind"},
+        headers=auth,
+    )
+    assert rejected.status_code == 409  # not a 500

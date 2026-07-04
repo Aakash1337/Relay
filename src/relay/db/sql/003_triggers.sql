@@ -21,6 +21,12 @@ CREATE TRIGGER trg_auto_suppress
   )
   EXECUTE FUNCTION fn_auto_suppress();
 
+-- Outreach drafts (human gate content) --------------------------------------
+DROP TRIGGER IF EXISTS trg_draft_guard ON outreach_drafts;
+CREATE TRIGGER trg_draft_guard
+  BEFORE INSERT OR UPDATE ON outreach_drafts
+  FOR EACH ROW EXECUTE FUNCTION fn_draft_guard();
+
 -- Send jobs (the outbox) ----------------------------------------------------
 DROP TRIGGER IF EXISTS trg_send_jobs_guard ON send_jobs;
 CREATE TRIGGER trg_send_jobs_guard

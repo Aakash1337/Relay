@@ -26,9 +26,14 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from relay.config import get_settings
 from relay.db.engine import tenant_session
-from relay.db.models import Campaign, Lead, OutreachDraft, SendJob
+from relay.db.models import (
+    Campaign,
+    Lead,
+    OutreachDraft,
+    SendJob,
+    build_idempotency_key,
+)
 from relay.domain import eligibility
 from relay.domain.state_machine import transition
 from relay.domain.states import TERMINAL_STATES, LeadState
@@ -109,7 +114,9 @@ class PipelineRunner:
                     visited=visited,
                 )
         except GuardrailViolation:
-            # The harness already persisted the kill status.
+            # Persist the kill now — the step's session has unwound, so this
+            # write does not contend with it for a pool connection.
+            self.harness.finalize_kill()
             raise
         except Exception as exc:
             self.harness.fail(str(exc))
@@ -322,13 +329,14 @@ class PipelineRunner:
             )
             return
 
-        settings = get_settings()
+        # Mode follows *intent*, not availability. A dry-run lead/campaign
+        # simulates; a real-intent one is evaluated as 'real' and therefore
+        # blocked by the eligibility gate until Phase 1C infrastructure
+        # exists. We must NOT silently downgrade a real-intent lead to a
+        # simulated "sent" — that would record outreach that never happened
+        # and burn the lead (sent is near-terminal).
         effective_dry_run = lead.dry_run or campaign.dry_run
-        mode = (
-            "real"
-            if (not effective_dry_run and settings.real_send_enabled)
-            else "simulated"
-        )
+        mode = "simulated" if effective_dry_run else "real"
         result = eligibility.evaluate(
             session, lead=lead, campaign=campaign, draft=draft, mode=mode
         )
@@ -354,8 +362,13 @@ class PipelineRunner:
             reason=f"eligible ({mode})",
             run_id=self.harness.run_id,
         )
-        idempotency_key = (
-            f"{lead.tenant_id}:{lead.campaign_id}:{lead.id}:1:{draft.version}"
+        sequence_step = 1
+        idempotency_key = build_idempotency_key(
+            lead.tenant_id,
+            lead.campaign_id,
+            lead.id,
+            sequence_step,
+            draft.version,
         )
         session.add(
             SendJob(
@@ -363,7 +376,7 @@ class PipelineRunner:
                 campaign_id=lead.campaign_id,
                 lead_id=lead.id,
                 draft_id=draft.id,
-                sequence_step=1,
+                sequence_step=sequence_step,
                 message_version=draft.version,
                 idempotency_key=idempotency_key,
                 mode=mode,

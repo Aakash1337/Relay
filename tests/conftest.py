@@ -56,6 +56,21 @@ _TABLES = (
 
 @pytest.fixture(scope="session", autouse=True)
 def _database() -> None:
+    # migrate(reset=True) runs DROP SCHEMA public CASCADE. If an ambient
+    # RELAY_DATABASE_URL is exported (direnv, CI, a docker shell) pointing at
+    # a real database, os.environ.setdefault yields to it — and the reset
+    # would destroy that database. Refuse unless the target is clearly a
+    # test database.
+    from relay.config import get_settings
+
+    settings = get_settings()
+    for url in (settings.database_url, settings.app_database_url):
+        db_name = url.rsplit("/", 1)[-1]
+        if "test" not in db_name:
+            raise RuntimeError(
+                f"refusing to run destructive tests against non-test database "
+                f"{db_name!r}; point RELAY_DATABASE_URL at a *_test database"
+            )
     setup_logging()
     migrate(reset=True)
 

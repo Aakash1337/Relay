@@ -17,6 +17,7 @@ tenant match) always apply.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -25,21 +26,10 @@ from sqlalchemy.orm import Session
 from relay.config import get_settings
 from relay.db.models import Campaign, Lead, OutreachDraft, SendJob
 from relay.domain.suppression import is_suppressed
+from relay.domain.vocab import SIMULATED_SAFE_BASES
 from relay.logs import get_logger
 
 log = get_logger(__name__)
-
-#: Lawful bases acceptable for a *simulated* (synthetic/seed) send.
-_SIMULATED_SAFE_BASES = frozenset(
-    {
-        "synthetic",
-        "test_consent",
-        "consent",
-        "contract",
-        "legitimate_interest",
-        "client_warranty",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -72,8 +62,15 @@ def evaluate(
     campaign: Campaign,
     draft: OutreachDraft,
     mode: str,
+    exclude_send_job_id: uuid.UUID | None = None,
 ) -> EligibilityResult:
-    """Run the full §10 checklist for one prospective send."""
+    """Run the full §10 checklist for one prospective send.
+
+    ``exclude_send_job_id`` is the job currently being executed: at
+    execution time the job itself IS the idempotency record, so it must not
+    count as a duplicate of itself. The worker passes its claimed job id
+    here rather than post-filtering the result by check name.
+    """
     checks: list[EligibilityCheck] = []
 
     def check(name: str, passed: bool, detail: str) -> None:
@@ -100,7 +97,7 @@ def evaluate(
     )
     check(
         "lawful_send_basis",
-        lead.lawful_basis in _SIMULATED_SAFE_BASES,
+        lead.lawful_basis in SIMULATED_SAFE_BASES,
         f"lawful_basis={lead.lawful_basis}, region={lead.region_assumption} "
         "(region-specific rules land with the Legal/Data Preflight, "
         "Phase 1B)",
@@ -118,15 +115,16 @@ def evaluate(
         and draft.lead_id == lead.id,
         "lead, campaign, and draft belong to the same tenant and chain",
     )
-    duplicate = session.execute(
-        select(SendJob.id).where(
-            SendJob.tenant_id == lead.tenant_id,
-            SendJob.campaign_id == lead.campaign_id,
-            SendJob.lead_id == lead.id,
-            SendJob.sequence_step == 1,
-            SendJob.message_version == draft.version,
-        )
-    ).first()
+    duplicate_query = select(SendJob.id).where(
+        SendJob.tenant_id == lead.tenant_id,
+        SendJob.campaign_id == lead.campaign_id,
+        SendJob.lead_id == lead.id,
+        SendJob.sequence_step == 1,
+        SendJob.message_version == draft.version,
+    )
+    if exclude_send_job_id is not None:
+        duplicate_query = duplicate_query.where(SendJob.id != exclude_send_job_id)
+    duplicate = session.execute(duplicate_query).first()
     check(
         "idempotency_key_unused",
         duplicate is None,

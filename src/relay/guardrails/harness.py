@@ -60,10 +60,24 @@ class RunHarness:
         self.tenant_id = tenant_id
         self.kind = kind
         self.lead_id = lead_id
-        self.max_iterations = max_iterations or settings.max_iterations_default
-        self.budget_units = budget_units or settings.budget_units_default
+        # `is None` (not truthiness): an explicit 0 must be honored/rejected,
+        # not silently replaced by the default — a zero budget is exactly the
+        # "no spend allowed" the harness exists to enforce.
+        self.max_iterations = (
+            settings.max_iterations_default
+            if max_iterations is None
+            else max_iterations
+        )
+        self.budget_units = (
+            settings.budget_units_default if budget_units is None else budget_units
+        )
+        if self.max_iterations < 1:
+            raise ValueError("max_iterations must be >= 1")
+        if self.budget_units < 0:
+            raise ValueError("budget_units must be >= 0")
         self.iterations = 0
         self.cost_units = 0.0
+        self._pending_kill: tuple[str, str] | None = None
         self.run_id = self._create_run_row()
 
     # ── Bookkeeping ─────────────────────────────────────────────────────────
@@ -102,12 +116,19 @@ class RunHarness:
                 run.finished_at = func.now()
 
     # ── The dumb limits ─────────────────────────────────────────────────────
+    #
+    # tick()/spend() are called from inside a step's open DB session. They do
+    # NOT persist the kill inline — that would open a second connection while
+    # the step still holds one, so under concurrent load the guardrail kill
+    # could block on pool exhaustion exactly when it must run. Instead they
+    # record the pending kill and raise; the caller persists it via
+    # finalize_kill() AFTER the step session has closed (one connection).
 
     def tick(self, step: str) -> None:
         """Count one iteration; kill the run past the cap."""
         self.iterations += 1
         if self.iterations > self.max_iterations:
-            self._persist(
+            self._pending_kill = (
                 "killed_iteration_cap",
                 f"iteration cap {self.max_iterations} exceeded at step {step}",
             )
@@ -126,7 +147,7 @@ class RunHarness:
         """Account cost; kill the run past the budget ceiling."""
         self.cost_units += units
         if self.cost_units > self.budget_units:
-            self._persist(
+            self._pending_kill = (
                 "killed_budget",
                 f"budget {self.budget_units} exceeded by {what}",
             )
@@ -140,6 +161,15 @@ class RunHarness:
                 f"run {self.run_id}: budget {self.budget_units} exceeded "
                 f"({self.cost_units} spent, last: {what!r})"
             )
+
+    def finalize_kill(self) -> None:
+        """Persist a pending guardrail kill. Call after the step session
+        that triggered it has closed (keeps the write to one connection)."""
+        if self._pending_kill is None:
+            return
+        status, detail = self._pending_kill
+        self._pending_kill = None
+        self._persist(status, detail)
 
     # ── Terminal bookkeeping ────────────────────────────────────────────────
 

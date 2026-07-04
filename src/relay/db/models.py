@@ -36,6 +36,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, BYTEA, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from relay.domain.states import LeadState
+from relay.domain.vocab import LawfulBasis, sql_in_list
 
 
 class Base(DeclarativeBase):
@@ -55,6 +56,21 @@ def _created_at() -> Mapped[datetime]:
 
 
 _STATES_SQL = ", ".join(f"'{s}'" for s in LeadState)
+_LAWFUL_BASIS_SQL = sql_in_list(LawfulBasis)
+
+
+def build_idempotency_key(
+    tenant_id: uuid.UUID,
+    campaign_id: uuid.UUID,
+    lead_id: uuid.UUID,
+    sequence_step: int,
+    message_version: int,
+) -> str:
+    """The send-job idempotency key, built from the exact columns of
+    uq_send_jobs_idempotency. One builder so the text key and the natural
+    key can never encode a different tuple (e.g. a hard-coded sequence
+    step in the string while the column says something else)."""
+    return f"{tenant_id}:{campaign_id}:{lead_id}:{sequence_step}:{message_version}"
 
 
 class Tenant(Base):
@@ -176,8 +192,7 @@ class Lead(Base):
             "source_terms_status = 'yes'", name="ck_leads_source_terms_yes"
         ),
         CheckConstraint(
-            "lawful_basis IN ('synthetic','test_consent','consent','contract',"
-            "'legitimate_interest','client_warranty')",
+            f"lawful_basis IN ({_LAWFUL_BASIS_SQL})",
             name="ck_leads_lawful_basis",
         ),
         CheckConstraint("retry_count >= 0", name="ck_leads_retry_count"),
@@ -322,6 +337,14 @@ class Suppression(Base):
         ),
         Index("ix_suppression_email_hash", "email_hash"),
         Index("ix_suppression_tenant_email", "tenant_id", "email_hash"),
+        # Supports fn_is_suppressed's domain-scope branch (domain-scope rows
+        # carry a NULL email_hash, so the tenant_email index does not help).
+        Index(
+            "ix_suppression_tenant_domain",
+            "tenant_id",
+            "domain",
+            postgresql_where=text("scope = 'domain'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -449,6 +472,15 @@ class SendJob(Base):
             postgresql_where=text("status IN ('queued','sending')"),
         ),
         Index("ix_send_jobs_status", "tenant_id", "status"),
+        # The worker claims the oldest queued job; a partial index on
+        # queued_at (excluding sent/blocked/failed) makes each claim an
+        # ordered index scan that stops at the first unlocked row.
+        Index(
+            "ix_send_jobs_claim",
+            "tenant_id",
+            "queued_at",
+            postgresql_where=text("status = 'queued'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -518,7 +550,9 @@ class PipelineRun(Base):
             name="ck_runs_status",
         ),
         CheckConstraint("max_iterations >= 1", name="ck_runs_max_iterations"),
-        CheckConstraint("budget_units > 0", name="ck_runs_budget"),
+        # >= 0: a zero budget is a legitimate "no paid work allowed" run
+        # (the first billed task kills it), not an invalid value.
+        CheckConstraint("budget_units >= 0", name="ck_runs_budget"),
         Index("ix_runs_tenant_started", "tenant_id", "started_at"),
     )
 

@@ -30,6 +30,7 @@ from relay.db.models import (
     Tenant,
 )
 from relay.domain.approval import ApprovalError, approve_draft, reject_draft
+from relay.domain.state_machine import TransitionError
 from relay.guardrails.harness import GuardrailViolation
 from relay.hashing import email_domain, hash_api_key, hash_email
 from relay.logs import get_logger
@@ -346,7 +347,7 @@ def approve(
             raise HTTPException(status.HTTP_404_NOT_FOUND, "draft not found")
         try:
             approve_draft(session, draft=draft, approver=body.approver)
-        except ApprovalError as exc:
+        except (ApprovalError, TransitionError, IntegrityError) as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         lead = session.get(Lead, draft.lead_id)
         assert lead is not None
@@ -372,7 +373,7 @@ def reject(
             reject_draft(
                 session, draft=draft, approver=body.approver, reason=body.reason
             )
-        except ApprovalError as exc:
+        except (ApprovalError, TransitionError, IntegrityError) as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         return {"status": "rejected"}
 

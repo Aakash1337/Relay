@@ -34,6 +34,7 @@ def test_forced_infinite_loop_is_killed_by_iteration_cap(tenant_a):
     with pytest.raises(IterationCapExceeded):
         while True:  # the malfunction the harness exists for
             harness.tick("spin")
+    harness.finalize_kill()  # the runner does this in its except handler
 
     assert harness.iterations == 26  # cap + the tick that tripped it
     assert _run_status(tenant_id, harness.run_id) == "killed_iteration_cap"
@@ -46,6 +47,7 @@ def test_over_budget_run_is_killed_by_budget_ceiling(tenant_a):
     with pytest.raises(BudgetExceeded):
         while True:
             harness.spend(1.0, what="expensive_stub_task")
+    harness.finalize_kill()
 
     assert harness.cost_units == pytest.approx(6.0)
     assert _run_status(tenant_id, harness.run_id) == "killed_budget"

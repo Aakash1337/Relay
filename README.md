@@ -64,6 +64,16 @@ Run them: `just test-exit-gate` (or `just test` for the full suite).
 The suite runs against **real PostgreSQL** — RLS, triggers, and unique
 constraints are the subjects under test, and they do not exist in mocks.
 
+Phase 0 also went through an adversarial multi-agent review; the confirmed
+findings are fixed and pinned by `tests/test_review_fixes.py` — approved
+drafts are content-frozen (tamper-evident), a send job's recipient must be
+its own lead's address, real-intent leads are blocked rather than silently
+"sent" in simulation, retry-cap columns are immutable to the code they
+police, `error_retryable` may only resume to its recorded state, the
+cross-tenant suppression probe is closed, and the `SECURITY DEFINER`
+functions carry owner-scoped policies so they keep working under `FORCE`
+row-level security on managed Postgres (not only on a superuser owner).
+
 ---
 
 ## Quickstart

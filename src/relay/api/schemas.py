@@ -10,6 +10,8 @@ from typing import Annotated, Literal
 from email_validator import EmailNotValidError, validate_email
 from pydantic import AfterValidator, BaseModel, Field
 
+from relay.domain.vocab import LawfulBasis
+
 
 def _validated_email(value: str) -> str:
     """Email validation that ACCEPTS special-use test domains (.test).
@@ -101,14 +103,7 @@ class LeadCreateRequest(BaseModel):
     campaign_id: uuid.UUID
     source_id: uuid.UUID
     email: EmailAddress
-    lawful_basis: Literal[
-        "synthetic",
-        "test_consent",
-        "consent",
-        "contract",
-        "legitimate_interest",
-        "client_warranty",
-    ]
+    lawful_basis: LawfulBasis
     region_assumption: str = Field(min_length=2, max_length=64)
     dry_run: bool = True
     first_name: str | None = None

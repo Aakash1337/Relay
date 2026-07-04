@@ -18,6 +18,13 @@ $$;
 -- Suppression check (§10). SECURITY DEFINER so the 'global' scope can see
 -- rows across tenants even under RLS: over-suppression is the safe
 -- direction. Scope precedence is irrelevant — any live match suppresses.
+--
+-- Cross-tenant probe guard: SECURITY DEFINER means this bypasses RLS, so a
+-- tenant-scoped caller must not be able to probe another tenant's
+-- suppression list. When a tenant context is set (fn_current_tenant() is
+-- not null), p_tenant must equal it. Untenanted callers (the worker's
+-- trigger path, which sets no GUC) are unaffected, and the 'global' branch
+-- does not depend on p_tenant so cross-tenant suppression still applies.
 -- ─────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION fn_is_suppressed(
   p_tenant uuid,
@@ -26,10 +33,17 @@ CREATE OR REPLACE FUNCTION fn_is_suppressed(
   p_campaign uuid,
   p_mailbox text
 ) RETURNS boolean
-LANGUAGE sql STABLE SECURITY DEFINER
+LANGUAGE plpgsql STABLE SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
-  SELECT EXISTS (
+DECLARE
+  v_ctx uuid := fn_current_tenant();
+BEGIN
+  IF v_ctx IS NOT NULL AND p_tenant IS DISTINCT FROM v_ctx THEN
+    RAISE EXCEPTION 'cross-tenant suppression probe rejected'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  RETURN EXISTS (
     SELECT 1
     FROM suppression s
     WHERE (s.expires_at IS NULL OR s.expires_at > now())
@@ -54,7 +68,8 @@ AS $$
           )
         )
       )
-  )
+  );
+END
 $$;
 
 -- ─────────────────────────────────────────────────────────────────────────
@@ -164,6 +179,22 @@ BEGIN
       USING ERRCODE = 'check_violation';
   END IF;
 
+  -- The retry cap is only a guardrail if its inputs cannot be edited by the
+  -- code it polices. max_retries is immutable; retry_count is managed solely
+  -- by this trigger (the resume branch below), never by a caller.
+  IF NEW.max_retries IS DISTINCT FROM OLD.max_retries THEN
+    RAISE EXCEPTION 'max_retries is immutable'
+      USING ERRCODE = 'check_violation';
+  END IF;
+
+  -- retry_count may only change on the state-changing resume branch below;
+  -- forbid it when the state is unchanged (blocks a no-op reset).
+  IF NEW.state IS NOT DISTINCT FROM OLD.state
+     AND NEW.retry_count IS DISTINCT FROM OLD.retry_count THEN
+    RAISE EXCEPTION 'retry_count is managed by the state machine'
+      USING ERRCODE = 'check_violation';
+  END IF;
+
   IF NEW.state IS DISTINCT FROM OLD.state THEN
     -- 1. Transition must exist in the seeded rule set.
     IF NOT EXISTS (
@@ -175,14 +206,31 @@ BEGIN
         USING ERRCODE = 'check_violation';
     END IF;
 
-    -- 2. Retry cap: a retryable error cannot retry past its cap.
-    IF OLD.state = 'error_retryable' AND NEW.state <> 'error_terminal' THEN
-      NEW.retry_count := OLD.retry_count + 1;
-      IF NEW.retry_count > NEW.max_retries THEN
-        RAISE EXCEPTION 'retry cap exceeded (% of % used)',
-          NEW.retry_count, NEW.max_retries
-          USING ERRCODE = 'check_violation';
+    -- 2. Retry cap: a retryable error resumes ONLY to the state it errored
+    --    from (or fails terminally). The generic rule set allows
+    --    error_retryable -> any active state; this narrows it structurally
+    --    so a two-hop (X -> error_retryable -> Y) cannot skip the pipeline
+    --    sequence. The counter is incremented here and capped.
+    IF OLD.state = 'error_retryable' THEN
+      IF NEW.state <> 'error_terminal' THEN
+        IF OLD.error_return_state IS NULL
+           OR NEW.state <> OLD.error_return_state THEN
+          RAISE EXCEPTION
+            'error_retryable may only resume to its error_return_state '
+            '(% ) or error_terminal; got %',
+            OLD.error_return_state, NEW.state
+            USING ERRCODE = 'check_violation';
+        END IF;
+        NEW.retry_count := OLD.retry_count + 1;
+        IF NEW.retry_count > OLD.max_retries THEN
+          RAISE EXCEPTION 'retry cap exceeded (% of % used)',
+            NEW.retry_count, OLD.max_retries
+            USING ERRCODE = 'check_violation';
+        END IF;
       END IF;
+    ELSIF NEW.retry_count IS DISTINCT FROM OLD.retry_count THEN
+      RAISE EXCEPTION 'retry_count is managed by the state machine'
+        USING ERRCODE = 'check_violation';
     END IF;
 
     -- 3. Send-eligibility invariants: 'sent' requires approved AND
@@ -294,6 +342,17 @@ BEGIN
       USING ERRCODE = 'check_violation';
   END IF;
 
+  -- The recipient identity on the job MUST be the lead's own address.
+  -- Otherwise the suppression re-check below (which uses the job's
+  -- recipient_email_hash) could be defeated by a job whose hash points at
+  -- an unsuppressed address while the lead itself is suppressed.
+  IF NEW.recipient_email_hash IS DISTINCT FROM v_lead.email_hash
+     OR NEW.recipient_domain IS DISTINCT FROM v_lead.email_domain THEN
+    RAISE EXCEPTION
+      'send job recipient must match its lead''s verified address'
+      USING ERRCODE = 'check_violation';
+  END IF;
+
   SELECT * INTO v_campaign
   FROM campaigns c
   WHERE c.tenant_id = NEW.tenant_id AND c.id = NEW.campaign_id;
@@ -379,6 +438,61 @@ BEGIN
         v_lead.state
         USING ERRCODE = 'check_violation';
     END IF;
+  END IF;
+
+  RETURN NEW;
+END
+$$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- Draft tamper-evidence (§10: "human approval exists for that exact message
+-- version"). Once a draft is approved, its content is frozen — the send
+-- worker reads draft.body at execution time, so mutable approved content
+-- would let a send carry text no human ever saw. Also enforces the draft
+-- status machine and requires approver metadata on approval.
+-- ─────────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION fn_draft_guard() RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    -- Version is the join key to lead.approved_message_version; never moves.
+    IF NEW.version IS DISTINCT FROM OLD.version THEN
+      RAISE EXCEPTION 'draft version is immutable'
+        USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- Content is frozen the moment a draft is approved, and can never
+    -- change while it stays approved.
+    IF OLD.status = 'approved' AND (
+         NEW.subject IS DISTINCT FROM OLD.subject
+      OR NEW.body IS DISTINCT FROM OLD.body
+      OR NEW.status IS DISTINCT FROM OLD.status
+    ) THEN
+      RAISE EXCEPTION 'an approved draft is immutable (content frozen)'
+        USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- Legal status moves only: draft -> pending_approval ->
+    -- approved | rejected. Nothing re-opens a decided draft.
+    IF NEW.status IS DISTINCT FROM OLD.status
+       AND NOT (
+         (OLD.status = 'draft' AND NEW.status = 'pending_approval')
+         OR (OLD.status = 'pending_approval'
+             AND NEW.status IN ('approved', 'rejected'))
+       ) THEN
+      RAISE EXCEPTION 'illegal draft status change: % -> %',
+        OLD.status, NEW.status
+        USING ERRCODE = 'check_violation';
+    END IF;
+  END IF;
+
+  -- Approval must be attributable: status='approved' requires approver
+  -- metadata, so a draft cannot be flipped approved with a NULL approver.
+  IF NEW.status = 'approved'
+     AND (NEW.approved_by IS NULL OR NEW.approved_at IS NULL) THEN
+    RAISE EXCEPTION 'an approved draft requires approved_by and approved_at'
+      USING ERRCODE = 'check_violation';
   END IF;
 
   RETURN NEW;

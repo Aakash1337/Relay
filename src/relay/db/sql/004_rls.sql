@@ -10,18 +10,35 @@
 -- application process could set a different tenant GUC — per-tenant DB
 -- credentials are the Phase 4 hardening step for that.
 
--- ── Tenants: a session sees only its own tenant row ────────────────────────
-ALTER TABLE tenants ENABLE ROW LEVEL SECURITY;
-ALTER TABLE tenants FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_self ON tenants;
-CREATE POLICY tenant_self ON tenants
-  USING (id = fn_current_tenant());
-
--- ── Tenant-scoped tables ────────────────────────────────────────────────────
+-- The SECURITY DEFINER functions (fn_is_suppressed's global scope,
+-- fn_tenant_id_for_api_key, fn_tenants_with_queued_jobs) must read across
+-- tenants. They run as the *owner* of the function — the migrating role. But
+-- FORCE ROW LEVEL SECURITY binds even the table owner, so on managed Postgres
+-- (RDS/Cloud SQL) where the owner is a plain, non-superuser role, those
+-- functions would silently see nothing: global suppression would stop
+-- working, API-key auth would 401 everything, and the worker would find no
+-- work. (It only "works" on a superuser owner because superusers bypass RLS.)
+-- The portable fix: a permissive policy scoped to the owner role, so the
+-- definer functions get full visibility regardless of superuser status. This
+-- is a harmless no-op when the owner is already a superuser.
 DO $$
 DECLARE
+  owner_role text := current_user;
   t text;
 BEGIN
+  -- ── Tenants: a session sees only its own tenant row ──────────────────────
+  ALTER TABLE tenants ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE tenants FORCE ROW LEVEL SECURITY;
+  DROP POLICY IF EXISTS tenant_self ON tenants;
+  CREATE POLICY tenant_self ON tenants USING (id = fn_current_tenant());
+  EXECUTE format('DROP POLICY IF EXISTS definer_bypass ON tenants');
+  EXECUTE format(
+    'CREATE POLICY definer_bypass ON tenants TO %I '
+    'USING (true) WITH CHECK (true)',
+    owner_role
+  );
+
+  -- ── Tenant-scoped tables ─────────────────────────────────────────────────
   FOREACH t IN ARRAY ARRAY[
     'lead_source_register', 'campaigns', 'leads', 'lead_transitions',
     'suppression', 'outreach_drafts', 'send_jobs', 'audit_log',
@@ -36,6 +53,12 @@ BEGIN
       'USING (tenant_id = fn_current_tenant()) '
       'WITH CHECK (tenant_id = fn_current_tenant())',
       t
+    );
+    EXECUTE format('DROP POLICY IF EXISTS definer_bypass ON %I', t);
+    EXECUTE format(
+      'CREATE POLICY definer_bypass ON %I TO %I '
+      'USING (true) WITH CHECK (true)',
+      t, owner_role
     );
   END LOOP;
 END

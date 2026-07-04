@@ -82,6 +82,18 @@ def _claim_next(session) -> SendJob | None:  # noqa: ANN001
     ).scalar_one_or_none()
 
 
+def _load_job_rows(
+    session,
+    job: SendJob,  # noqa: ANN001
+) -> tuple[Lead | None, Campaign | None, OutreachDraft | None]:
+    """Fetch a job's lead, campaign, and draft (PK lookups, identity-cached)."""
+    return (
+        session.get(Lead, job.lead_id),
+        session.get(Campaign, job.campaign_id),
+        session.get(OutreachDraft, job.draft_id),
+    )
+
+
 def _process_one(tenant_id: uuid.UUID, stats: WorkerStats) -> bool:
     """Process at most one job in its own transaction. True if one existed."""
     job_id: uuid.UUID | None = None
@@ -92,27 +104,23 @@ def _process_one(tenant_id: uuid.UUID, stats: WorkerStats) -> bool:
                 return False
             job_id = job.id
 
-            lead = session.get(Lead, job.lead_id)
-            campaign = session.get(Campaign, job.campaign_id)
-            draft = session.get(OutreachDraft, job.draft_id)
+            lead, campaign, draft = _load_job_rows(session, job)
             if lead is None or campaign is None or draft is None:
                 raise LookupError("send job references missing rows")
 
-            # Execution-time re-check of the full eligibility gate.
+            # Execution-time re-check of the full eligibility gate. The job
+            # being executed is excluded from the idempotency check (it is
+            # itself the idempotency record).
             result = eligibility.evaluate(
                 session,
                 lead=lead,
                 campaign=campaign,
                 draft=draft,
                 mode=job.mode,
+                exclude_send_job_id=job.id,
             )
-            # The job itself is the idempotency record — its own existence
-            # must not fail the gate at execution time.
-            blocking = [
-                c for c in result.failures if c.name != "idempotency_key_unused"
-            ]
-            if blocking:
-                detail = "; ".join(f"{c.name}: {c.detail}" for c in blocking)
+            if not result.eligible:
+                detail = result.failure_summary()
                 job.status = "blocked"
                 job.error = detail
                 job.completed_at = datetime.now(tz=UTC)
@@ -194,35 +202,53 @@ def _process_one(tenant_id: uuid.UUID, stats: WorkerStats) -> bool:
 
 
 def _mark_failed(tenant_id: uuid.UUID, job_id: uuid.UUID | None, error: str) -> None:
-    """Durably record a failure in a fresh transaction (the claim rolled
-    back, so the job is queued again); park the lead in error_retryable."""
+    """Durably record a send failure in a fresh transaction.
+
+    The claim transaction rolled back, so the job is 'queued' again here.
+    We mark it 'failed' (terminal) and move the lead to error_terminal —
+    NOT error_retryable. Automatic send retry would need a re-queue path
+    that does not exist in Phase 0 (the idempotency UNIQUE constraint
+    blocks a second job for the same version), so promising "retryable"
+    would strand the lead in send_queued forever. Honest, resumable send
+    retry is a Phase 2 concern; a failed send needs human/ops attention.
+
+    Best-effort: this runs while handling another failure, so it must not
+    raise (e.g. if the DB error that caused the original failure persists).
+    """
     if job_id is None:
         return
-    with tenant_session(tenant_id) as session:
-        job = session.get(SendJob, job_id)
-        if job is None or job.status not in ("queued", "sending"):
-            return
-        job.status = "failed"
-        job.error = error[:2000]
-        job.completed_at = datetime.now(tz=UTC)
-        lead = session.get(Lead, job.lead_id)
-        if lead is not None and lead.state == str(LeadState.SEND_QUEUED):
-            transition(
+    try:
+        with tenant_session(tenant_id) as session:
+            job = session.get(SendJob, job_id)
+            if job is None or job.status not in ("queued", "sending"):
+                return
+            job.status = "failed"
+            job.error = error[:2000]
+            job.completed_at = datetime.now(tz=UTC)
+            lead = session.get(Lead, job.lead_id)
+            if lead is not None and lead.state == str(LeadState.SEND_QUEUED):
+                transition(
+                    session,
+                    lead,
+                    LeadState.ERROR_TERMINAL,
+                    actor=ACTOR,
+                    reason=f"send execution failed: {error[:200]}",
+                )
+            audit.record(
                 session,
-                lead,
-                LeadState.ERROR_RETRYABLE,
-                actor=ACTOR,
-                reason=f"send execution failed: {error[:200]}",
+                tenant_id=tenant_id,
+                actor_type="worker",
+                actor_id=ACTOR,
+                action="send.failed",
+                entity_type="send_job",
+                entity_id=str(job_id),
+                payload={"error": error[:500]},
             )
-        audit.record(
-            session,
-            tenant_id=tenant_id,
-            actor_type="worker",
-            actor_id=ACTOR,
-            action="send.failed",
-            entity_type="send_job",
-            entity_id=str(job_id),
-            payload={"error": error[:500]},
+    except Exception as exc:  # noqa: BLE001 — recovery must not itself crash
+        log.error(
+            "failed to record send failure",
+            send_job_id=str(job_id),
+            error=str(exc),
         )
 
 
@@ -237,8 +263,8 @@ def main() -> None:
         help="Process pending jobs once and exit (default behavior)",
     )
     parser.add_argument("--max-jobs", type=int, default=100)
-    parser.parse_args()
-    stats = process_pending()
+    args = parser.parse_args()
+    stats = process_pending(max_jobs=args.max_jobs)
     log.info(
         "worker finished",
         sent=stats.sent,

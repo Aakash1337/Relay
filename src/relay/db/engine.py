@@ -42,24 +42,33 @@ def reset_engines() -> None:
         cached.cache_clear()
 
 
+@event.listens_for(Session, "after_begin")
+def _pin_tenant_from_info(  # noqa: ANN001 — SQLAlchemy event signature
+    session, _transaction, connection
+) -> None:
+    """Re-pin app.tenant_id at the start of every transaction.
+
+    One class-level listener (registered once at import) reads the tenant
+    from ``session.info`` rather than a per-session closure — otherwise
+    every tenant_session() would register a new listener that lives in the
+    global event registry until GC. ``is_local => true`` scopes the setting
+    to the transaction so it never leaks across a pooled connection.
+    """
+    tenant_id = session.info.get("relay_tenant_id")
+    if tenant_id is not None:
+        connection.exec_driver_sql(
+            "SELECT set_config('app.tenant_id', %s, true)", (str(tenant_id),)
+        )
+
+
 @contextmanager
 def tenant_session(tenant_id: uuid.UUID | str) -> Iterator[Session]:
     """A session pinned to one tenant for its entire lifetime.
 
     ``app.tenant_id`` is (re)applied at the start of every transaction the
-    session opens, using ``set_config(..., is_local => true)`` so the
-    setting can never leak across transactions on a pooled connection.
+    session opens (see the class-level listener above).
     """
-    session = Session(app_engine())
-
-    @event.listens_for(session, "after_begin")
-    def _pin_tenant(  # noqa: ANN001 — SQLAlchemy event signature
-        _session, _transaction, connection
-    ) -> None:
-        connection.exec_driver_sql(
-            "SELECT set_config('app.tenant_id', %s, true)", (str(tenant_id),)
-        )
-
+    session = Session(app_engine(), info={"relay_tenant_id": str(tenant_id)})
     try:
         yield session
         session.commit()
