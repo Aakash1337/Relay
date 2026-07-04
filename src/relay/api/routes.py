@@ -42,6 +42,7 @@ from relay.economics import campaign_economics
 from relay.guardrails.harness import GuardrailViolation
 from relay.hashing import email_domain, hash_api_key, hash_email
 from relay.logs import get_logger
+from relay.observability import evaluate_alerts, prometheus_text, tenant_metrics
 from relay.pipeline.runner import PipelineRunner
 from relay.workers.send_worker import process_pending
 
@@ -500,6 +501,61 @@ def economics(
         cost_units_per_meeting=report.cost_units_per_meeting,
         cost_usd_per_meeting=report.cost_usd_per_meeting,
     )
+
+
+# ── Observability (Phase 2) ─────────────────────────────────────────────────
+
+
+@router.get("/metrics", response_model=schemas.MetricsResponse)
+def metrics_json(
+    tenant_id: uuid.UUID = Depends(require_tenant),
+) -> schemas.MetricsResponse:
+    m = tenant_metrics(tenant_id)
+    return schemas.MetricsResponse(
+        tenant_id=m.tenant_id,
+        generated_at=m.generated_at,
+        lead_states=m.lead_states,
+        runs_window=m.runs,
+        cost_units_window=m.cost_units_window,
+        send_jobs=m.send_jobs,
+        replies_window=m.replies_window,
+        sent_window=m.sent_window,
+        suppression_entries=m.suppression_entries,
+        run_error_rate=m.run_error_rate,
+        reply_rate=m.reply_rate,
+    )
+
+
+@router.get("/metrics/prometheus", include_in_schema=False)
+def metrics_prometheus(
+    tenant_id: uuid.UUID = Depends(require_tenant),
+):
+    from fastapi.responses import PlainTextResponse
+
+    return PlainTextResponse(prometheus_text(tenant_metrics(tenant_id)))
+
+
+@router.get("/alerts", response_model=schemas.AlertsResponse)
+def alerts(
+    tenant_id: uuid.UUID = Depends(require_tenant),
+) -> schemas.AlertsResponse:
+    fired = evaluate_alerts(tenant_id)
+    return schemas.AlertsResponse(
+        tenant_id=tenant_id,
+        alerts=[
+            schemas.AlertItem(
+                rule=a.rule, severity=a.severity, detail=a.detail, value=a.value
+            )
+            for a in fired
+        ],
+    )
+
+
+@router.get("/ops", include_in_schema=False)
+def ops_page() -> HTMLResponse:
+    from relay.api.ops_ui import OPS_PAGE
+
+    return HTMLResponse(OPS_PAGE)
 
 
 # ── DSR erasure (tenant-scoped): the right to be forgotten ──────────────────

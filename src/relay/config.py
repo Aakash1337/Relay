@@ -95,6 +95,13 @@ class Settings(BaseSettings):
     compute_retry_attempts: int = Field(default=2, ge=0)
     compute_retry_base_seconds: float = Field(default=0.5, ge=0)
 
+    # ── Alerting thresholds (Phase 2) ───────────────────────────────────────
+    alert_spend_units_per_hour: float = Field(default=100.0, gt=0)
+    alert_failure_streak: int = Field(default=3, ge=2)
+    alert_queue_stale_seconds: float = Field(default=600.0, gt=0)
+    #: Optional webhook (Slack/n8n/…) for fired alerts; empty = log only.
+    alert_webhook_url: str = ""
+
     # ── Crash recovery (Phase 2) ────────────────────────────────────────────
     # A pipeline run still 'running' (or a send job still 'sending') after
     # this many seconds is an orphan from a crash — no legitimate per-lead
