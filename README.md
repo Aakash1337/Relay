@@ -10,11 +10,12 @@ send is *structurally impossible* — enforced by the database, not by
 good intentions.
 
 This repository currently implements **Phase 0 — Foundations &
-Scaffolding** of the [development roadmap](RELAY-development-roadmap.md)
-(on the `Plan` branch, together with the full
-[project documentation](RELAY-project-documentation.md)): a skeleton
-that runs end to end with **no real work in it** — synthetic data only,
-no real PII, and no real send path at all.
+Scaffolding** and **Phase 1A — Synthetic dry-run MVP** of the
+[development roadmap](RELAY-development-roadmap.md) (on the `Plan`
+branch, together with the full
+[project documentation](RELAY-project-documentation.md)): the pipeline
+runs end to end on synthetic data with real reasoning seams — still no
+real PII and no real send path (those are gated behind Phases 1B/1C).
 
 ---
 
@@ -41,6 +42,28 @@ no real PII, and no real send path at all.
 by the Legal/Data Preflight, Phase 1B), real sending (gated by
 deliverability + provider approval, Phase 1C), any model calls (the
 reasoning stubs land in Phase 1A), CRM sync, and the approval UI.
+
+---
+
+## What Phase 1A adds
+
+| Capability | Where |
+| --- | --- |
+| Compute backends behind the routing seam: `offline` (deterministic, hermetic — the default), `openai`-compatible local tier (Ollama/vLLM), `anthropic` hosted tier (Claude API, adaptive thinking, effort raised on extended-reasoning routes) | `src/relay/compute/` |
+| §11 prompt scaffolding: every piece of prospect-authored text enters prompts entity-escaped inside a provenance-labeled `<untrusted_data>` block; a bio saying "ignore previous instructions" is data, not instruction | `src/relay/compute/prompting.py` |
+| No silent fallback: backends are chosen by `RELAY_COMPUTE_*` config only; a misconfigured real backend fails loudly instead of quietly degrading | `src/relay/compute/registry.py` |
+| Synthetic prospects (Faker, seeded, all at `.test` domains) with documented edge cases: prompt-injection bios, unicode names, oversized bios, sparse records, plus-addressing | `src/relay/synthetic/` |
+| Real pipeline data flow: enrichment/scoring/personalization consume the lead's fields; scoring branches on `RELAY_FIT_SCORE_THRESHOLD`; triage runs on the actual reply body and records a write-once outcome on the `replies` row | `src/relay/pipeline/runner.py` |
+| Replies as first-class rows: tied to a concrete send job, content trigger-frozen, triage write-once; simulated in 1A, webhook-shaped for 1C | `replies` table |
+| Reviewer rubric at the human gate: approve / approve-with-edits / reject with a controlled reason vocabulary, recorded append-only in `draft_reviews`; approve-with-edits supersedes the draft with the human's text and approves *that* version | `src/relay/domain/approval.py` |
+| Minimal approval UI: one self-contained HTML page at `/review` (queue → draft → decision), no build step, no external assets; the page itself says approval never sends | `src/relay/api/review_ui.py` |
+| Economics gate: funnel counts + cost-per-booked-meeting derived from rows the pipeline already writes; USD projection only when `RELAY_COST_UNIT_USD` is calibrated | `src/relay/economics.py`, `GET /campaigns/{id}/economics` |
+| CRM sync seam: one-way best-effort mirror (InMemory for dev, EspoCRM adapter), never on the send path — a CRM outage cannot touch a gate | `src/relay/crm/` |
+
+Injection-hostile inputs are part of the synthetic corpus on purpose:
+the exit tests assert a hostile bio changes nothing about the gates and
+a hostile reply can only ever move triage toward *less* contact
+(`unsubscribed`), never more.
 
 ---
 
@@ -92,8 +115,9 @@ just db-local-start       # no Docker: throwaway local cluster on :5433
 
 just db-migrate           # schema + triggers + RLS + rule seeding
 just demo                 # walk a synthetic lead through every state
+just seed                 # Phase 1A: seed + run a 20-prospect cohort
 just test                 # the whole suite incl. exit gates
-just api                  # FastAPI on :8000 (docs at /docs)
+just api                  # FastAPI on :8000 (docs at /docs, review UI at /review)
 just worker               # one internal send-worker pass
 just stack-up             # optional: adds the n8n spine on :5678
 ```
@@ -170,10 +194,6 @@ CI (GitHub Actions) runs ruff + the full test suite against a Postgres
 
 ## What comes next (roadmap)
 
-- **Phase 1A** — synthetic/seed dry-run MVP: real two-tier routing
-  (local model + hosted API), Faker-generated prospects, simulated
-  replies, one CRM sync target, minimal approval UI with the reviewer
-  rubric, cost-per-qualified-meeting projection.
 - **Phase 1B** — real data, no sending. Blocked by the Legal/Data
   Preflight artifact (jurisdiction matrix, controller/processor,
   retention, DSR/deletion workflow).

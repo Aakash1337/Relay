@@ -89,6 +89,10 @@ worker:
 demo:
     uv run python scripts/demo_journey.py
 
+# Seed a synthetic campaign (Faker prospects incl. edge cases) and run it
+seed n="20":
+    uv run python scripts/seed_synthetic.py {{n}}
+
 # ── Testing ─────────────────────────────────────────────────────────────────
 
 # Run the full test suite (requires a reachable Postgres; see README)

@@ -67,6 +67,7 @@ def _prospect_payload(lead: Lead) -> dict:
         payload[UNTRUSTED_KEY] = {"prospect_bio": lead.bio}
     return payload
 
+
 log = get_logger(__name__)
 
 ACTOR = "system:pipeline"

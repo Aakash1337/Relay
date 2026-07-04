@@ -155,8 +155,7 @@ def test_review_approved_with_edits_sends_the_human_text(tenant_a, factory_a):
     with tenant_session(tenant_id) as session:
         job = session.execute(select(SendJob)).scalar_one()
         drafts = {
-            d.id: d
-            for d in session.execute(select(OutreachDraft)).scalars().all()
+            d.id: d for d in session.execute(select(OutreachDraft)).scalars().all()
         }
         assert drafts[job.draft_id].body.endswith("[edited]")
         assert job.message_version == 2
@@ -198,9 +197,7 @@ def test_review_rejected_parks_lead_terminally(tenant_a, factory_a):
 # ── CRM mirror ───────────────────────────────────────────────────────────────
 
 
-def test_pipeline_mirrors_lead_to_crm_when_enabled(
-    tenant_a, factory_a, monkeypatch
-):
+def test_pipeline_mirrors_lead_to_crm_when_enabled(tenant_a, factory_a, monkeypatch):
     tenant_id, _ = tenant_a
     monkeypatch.setenv("RELAY_CRM_BACKEND", "memory")
     get_settings.cache_clear()

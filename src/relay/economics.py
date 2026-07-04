@@ -78,9 +78,7 @@ def _count_reached(session, campaign_id: uuid.UUID, state: str) -> int:
     ).scalar_one()
 
 
-def campaign_economics(
-    tenant_id: uuid.UUID, campaign_id: uuid.UUID
-) -> EconomicsReport:
+def campaign_economics(tenant_id: uuid.UUID, campaign_id: uuid.UUID) -> EconomicsReport:
     settings = get_settings()
     with tenant_session(tenant_id) as session:
         leads_total = session.execute(

@@ -76,13 +76,9 @@ class HostedAnthropicBackend:
 
         if message.stop_reason == "refusal":
             # Do not retry into a safety refusal; park for human review.
-            raise ComputeRefused(
-                f"hosted model declined task {request.task_type}"
-            )
+            raise ComputeRefused(f"hosted model declined task {request.task_type}")
 
-        text = "".join(
-            block.text for block in message.content if block.type == "text"
-        )
+        text = "".join(block.text for block in message.content if block.type == "text")
         output = parse_json_output(text, backend=self.name)
         usage = message.usage
         log.info(

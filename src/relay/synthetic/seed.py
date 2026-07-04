@@ -139,9 +139,7 @@ def create_simulated_reply(
         if not campaign.simulated_replies_enabled:
             raise ValueError("campaign has simulated replies disabled")
         job = session.execute(
-            select(SendJob).where(
-                SendJob.lead_id == lead_id, SendJob.status == "sent"
-            )
+            select(SendJob).where(SendJob.lead_id == lead_id, SendJob.status == "sent")
         ).scalar_one_or_none()
         if job is None:
             raise ValueError("no completed send to reply to")

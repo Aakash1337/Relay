@@ -93,9 +93,7 @@ def test_reply_triage_category_is_vocab_checked(tenant_a, factory_a):
     with pytest.raises(IntegrityError, match="ck_replies_triage_category"):  # noqa: SIM117
         with tenant_session(tenant_id) as session:
             session.execute(
-                text(
-                    "UPDATE replies SET triage_category = 'maybe' WHERE id = :id"
-                ),
+                text("UPDATE replies SET triage_category = 'maybe' WHERE id = :id"),
                 {"id": str(reply_id)},
             )
 
@@ -236,9 +234,7 @@ def test_draft_reviews_are_append_only(tenant_a, factory_a):
     # Layer 1: the app role has no UPDATE grant at all.
     with pytest.raises(ProgrammingError, match="permission denied"):  # noqa: SIM117
         with tenant_session(tenant_id) as session:
-            session.execute(
-                text("UPDATE draft_reviews SET decision = 'rejected'")
-            )
+            session.execute(text("UPDATE draft_reviews SET decision = 'rejected'"))
 
     # Layer 2: even the schema-owning role hits the append-only trigger.
     from relay.db.engine import admin_engine

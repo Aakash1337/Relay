@@ -35,9 +35,9 @@ def test_pending_queue_lists_the_draft(client, api_tenant):
 def test_review_endpoint_approves_with_edits(client, api_tenant):
     _, lead = _to_gate(client, api_tenant)
     auth = _auth(api_tenant)
-    draft_id = client.get("/outreach-drafts/pending", headers=auth).json()[
-        "drafts"
-    ][0]["draft_id"]
+    draft_id = client.get("/outreach-drafts/pending", headers=auth).json()["drafts"][0][
+        "draft_id"
+    ]
 
     res = client.post(
         f"/outreach-drafts/{draft_id}/review",
@@ -55,17 +55,15 @@ def test_review_endpoint_approves_with_edits(client, api_tenant):
     assert body["active_draft_id"] != str(draft_id)
     assert body["lead_state"] == "approved"
     # Queue is empty afterwards.
-    assert client.get(
-        "/outreach-drafts/pending", headers=auth
-    ).json()["drafts"] == []
+    assert client.get("/outreach-drafts/pending", headers=auth).json()["drafts"] == []
 
 
 def test_review_endpoint_rejects_bad_rubric(client, api_tenant):
     _, lead = _to_gate(client, api_tenant)
     auth = _auth(api_tenant)
-    draft_id = client.get("/outreach-drafts/pending", headers=auth).json()[
-        "drafts"
-    ][0]["draft_id"]
+    draft_id = client.get("/outreach-drafts/pending", headers=auth).json()["drafts"][0][
+        "draft_id"
+    ]
     # Rejection without a reason: schema-valid, rubric-invalid → 409.
     res = client.post(
         f"/outreach-drafts/{draft_id}/review",
@@ -83,13 +81,11 @@ def test_review_endpoint_rejects_bad_rubric(client, api_tenant):
 
 
 def test_economics_reflects_the_funnel(client, api_tenant):
-    campaign_id, lead = _to_gate(
-        client, api_tenant, email="journey-3@example.test"
-    )
+    campaign_id, lead = _to_gate(client, api_tenant, email="journey-3@example.test")
     auth = _auth(api_tenant)
-    draft_id = client.get("/outreach-drafts/pending", headers=auth).json()[
-        "drafts"
-    ][0]["draft_id"]
+    draft_id = client.get("/outreach-drafts/pending", headers=auth).json()["drafts"][0][
+        "draft_id"
+    ]
     client.post(
         f"/outreach-drafts/{draft_id}/review",
         json={"reviewer": "r", "decision": "approved", "reasons": []},
@@ -114,9 +110,7 @@ def test_economics_reflects_the_funnel(client, api_tenant):
 
 
 def test_economics_404_for_foreign_campaign(client, api_tenant):
-    res = client.get(
-        f"/campaigns/{uuid.uuid4()}/economics", headers=_auth(api_tenant)
-    )
+    res = client.get(f"/campaigns/{uuid.uuid4()}/economics", headers=_auth(api_tenant))
     assert res.status_code == 404
 
 
