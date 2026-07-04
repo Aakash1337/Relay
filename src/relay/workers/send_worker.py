@@ -50,7 +50,16 @@ class WorkerStats:
 
 
 def process_pending(max_jobs: int = 100) -> WorkerStats:
-    """Process queued send jobs across all tenants, one tenant at a time."""
+    """Process queued send jobs across all tenants, one tenant at a time.
+
+    Every tick starts with a crash-recovery pass: orphaned runs get
+    closed and orphaned mid-send jobs failed BEFORE new work is claimed,
+    so the system self-heals on its normal schedule with no separate
+    recovery deployment to forget.
+    """
+    from relay.pipeline.recovery import recover_orphans
+
+    recover_orphans()
     stats = WorkerStats()
     with untenanted_app_session() as session:
         tenant_ids = [

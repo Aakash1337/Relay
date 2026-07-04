@@ -111,3 +111,7 @@ GRANT EXECUTE ON FUNCTION fn_dsr_erase(uuid, text) TO relay_app;
 
 REVOKE ALL ON FUNCTION fn_tenants_with_expired_leads() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION fn_tenants_with_expired_leads() TO relay_app;
+
+REVOKE ALL ON FUNCTION fn_tenants_with_stale_work(double precision) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION fn_tenants_with_stale_work(double precision)
+  TO relay_app;

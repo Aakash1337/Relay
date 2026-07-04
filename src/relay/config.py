@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     # means "not calibrated" and the USD figure is omitted, not guessed.
     cost_unit_usd: float = Field(default=0.0, ge=0)
 
+    # ── Crash recovery (Phase 2) ────────────────────────────────────────────
+    # A pipeline run still 'running' (or a send job still 'sending') after
+    # this many seconds is an orphan from a crash — no legitimate per-lead
+    # run or single send takes anywhere near this long.
+    recovery_stale_after_seconds: float = Field(default=300.0, gt=0)
+
     # ── Pipeline decision thresholds (Phase 1A) ─────────────────────────────
     # Leads scoring below this are scored_rejected. Default sits below the
     # offline backend's floor (0.35) so hermetic runs qualify by default;
