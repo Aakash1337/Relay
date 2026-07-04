@@ -1,12 +1,11 @@
-"""Stub executors for the two compute tiers (Phase 0).
+"""Task execution behind the routing seam — real backends since Phase 1A.
 
-No model is called anywhere in Phase 0 — these return canned,
-deterministic outputs and account stub costs against the run budget, so
-the routing seam and the guardrail accounting are real even though the
-reasoning is not yet.
-
-Phase 1A replaces the bodies (local model / hosted API) without touching
-any call site: that is the point of the seam.
+The seam promised in Phase 0 holds: call sites still say
+``execute(task_type, payload, harness=...)`` and get a ``TaskResult``;
+what changed is that the body now routes to a real compute backend
+(offline / local OpenAI-compatible / hosted Claude) selected purely by
+configuration, with the §11 prompt scaffolding applied on the way in and
+the output contract validated on the way out.
 """
 
 from __future__ import annotations
@@ -14,6 +13,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from relay.compute.base import require_fields
+from relay.compute.prompting import build_request
+from relay.compute.registry import backend_for
 from relay.config import get_settings
 from relay.guardrails.harness import RunHarness
 from relay.logs import get_logger
@@ -28,27 +30,8 @@ class TaskResult:
     decision: RoutingDecision
     output: dict[str, Any] = field(default_factory=dict)
     cost_units: float = 0.0
-
-
-_CANNED_OUTPUTS: dict[TaskType, dict[str, Any]] = {
-    TaskType.ENRICHMENT: {
-        "company_summary": "stub: enrichment pending Phase 1A",
-        "signals": [],
-    },
-    TaskType.FIELD_EXTRACTION: {"fields": {}},
-    TaskType.CLASSIFICATION: {"label": "pass", "confidence": 1.0},
-    TaskType.TAGGING: {"tags": ["synthetic"]},
-    TaskType.SUMMARIZATION: {"summary": "stub summary"},
-    TaskType.FIT_SCORING: {"fit_score": 0.82, "rationale": "stub scoring"},
-    TaskType.REPLY_TRIAGE: {"category": "interested", "confidence": 1.0},
-    TaskType.OUTREACH_COPY: {
-        "subject": "stub subject",
-        "body": "stub body (personalization lands in Phase 1A)",
-        "personalization_sources": {},
-    },
-    TaskType.ORCHESTRATION: {"plan": []},
-    TaskType.SENSITIVE: {"result": None},
-}
+    backend: str = ""
+    model: str = ""
 
 
 def _stub_cost(decision: RoutingDecision) -> float:
@@ -68,24 +51,36 @@ def execute(
     ambiguous: bool = False,
     requires_tools: bool = False,
 ) -> TaskResult:
-    """Route, 'execute', and bill one task under the harness's budget."""
+    """Route, execute on the tier's backend, and bill under the harness."""
     decision = route(task_type, ambiguous=ambiguous, requires_tools=requires_tools)
+    backend = backend_for(decision.tier)
+    request = build_request(
+        task_type,
+        payload,
+        extended_reasoning=decision.extended_reasoning,
+        max_output_tokens=get_settings().compute_max_output_tokens,
+    )
     cost = _stub_cost(decision)
     # Bill BEFORE producing output: an over-budget task never runs.
     harness.spend(cost, what=str(task_type))
-    output = dict(_CANNED_OUTPUTS[task_type])
-    if payload:
-        output["_echo"] = {k: v for k, v in payload.items() if k != "raw"}
+    response = backend.complete(request)
+    require_fields(response.output, request.output_fields, backend=backend.name)
     log.info(
         "task executed",
         task_type=str(task_type),
         tier=str(decision.tier),
+        backend=response.backend,
+        model=response.model,
         extended_reasoning=decision.extended_reasoning,
         cost_units=cost,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
     )
     return TaskResult(
         task_type=task_type,
         decision=decision,
-        output=output,
+        output=response.output,
         cost_units=cost,
+        backend=response.backend,
+        model=response.model,
     )
