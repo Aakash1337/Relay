@@ -5,28 +5,7 @@ from __future__ import annotations
 
 import uuid
 
-import pytest
-from fastapi.testclient import TestClient
-
-from relay.api.app import app
-
-ADMIN = {"X-Admin-Token": "test-admin-token"}
-
-
-@pytest.fixture
-def client(_database) -> TestClient:
-    return TestClient(app)
-
-
-@pytest.fixture
-def api_tenant(client) -> dict:
-    response = client.post(
-        "/tenants",
-        json={"name": f"api-tenant-{uuid.uuid4().hex[:8]}"},
-        headers=ADMIN,
-    )
-    assert response.status_code == 201, response.text
-    return response.json()
+from tests.conftest import ADMIN
 
 
 def _auth(tenant: dict) -> dict:

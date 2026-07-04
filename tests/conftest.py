@@ -42,6 +42,8 @@ from relay.workers.send_worker import process_pending  # noqa: E402
 
 _TABLES = (
     "audit_log",
+    "draft_reviews",
+    "replies",
     "send_jobs",
     "outreach_drafts",
     "suppression",
@@ -233,3 +235,28 @@ def walk_to_closed(tenant_id: uuid.UUID, lead_id: uuid.UUID) -> None:
     create_simulated_reply(tenant_id, lead_id, intent=ReplyIntent.INTERESTED)
     outcome = PipelineRunner(tenant_id, lead_id=lead_id).run()
     assert outcome.final_state == "closed", outcome
+
+
+# ── API fixtures (shared by the HTTP test modules) ──────────────────────────
+
+ADMIN = {"X-Admin-Token": "test-admin-token"}
+
+
+@pytest.fixture
+def client(_database):
+    from fastapi.testclient import TestClient
+
+    from relay.api.app import app
+
+    return TestClient(app)
+
+
+@pytest.fixture
+def api_tenant(client) -> dict:
+    response = client.post(
+        "/tenants",
+        json={"name": f"api-tenant-{uuid.uuid4().hex[:8]}"},
+        headers=ADMIN,
+    )
+    assert response.status_code == 201, response.text
+    return response.json()

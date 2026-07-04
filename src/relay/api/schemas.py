@@ -10,7 +10,7 @@ from typing import Annotated, Literal
 from email_validator import EmailNotValidError, validate_email
 from pydantic import AfterValidator, BaseModel, Field
 
-from relay.domain.vocab import LawfulBasis
+from relay.domain.vocab import LawfulBasis, ReviewDecision, ReviewReason
 
 
 def _validated_email(value: str) -> str:
@@ -197,3 +197,56 @@ class WorkerTickResponse(BaseModel):
     sent: int
     blocked: int
     failed: int
+
+
+# ── Rubric review (Phase 1A human gate) ─────────────────────────────────────
+
+
+class ReviewRequest(BaseModel):
+    reviewer: str = Field(min_length=1, max_length=200)
+    decision: ReviewDecision
+    reasons: list[ReviewReason] = Field(default_factory=list)
+    notes: str | None = Field(default=None, max_length=2000)
+    edited_subject: str | None = Field(default=None, max_length=200)
+    edited_body: str | None = Field(default=None, max_length=5000)
+
+
+class ReviewResponse(BaseModel):
+    review_id: uuid.UUID
+    draft_id: uuid.UUID
+    decision: ReviewDecision
+    #: The draft that is approved after this review (None unless approved).
+    active_draft_id: uuid.UUID | None
+    #: Always false here: review/approval never sends (§10).
+    sent: Literal[False] = False
+    lead_state: str
+
+
+class PendingDraftItem(BaseModel):
+    draft_id: uuid.UUID
+    lead_id: uuid.UUID
+    campaign_id: uuid.UUID
+    version: int
+    subject: str
+    body: str
+    personalization_sources: dict
+    lead_first_name: str | None
+    lead_company: str | None
+    lead_state: str
+    created_at: datetime
+
+
+class PendingDraftsResponse(BaseModel):
+    drafts: list[PendingDraftItem]
+
+
+# ── Economics (Phase 1A gate) ───────────────────────────────────────────────
+
+
+class EconomicsResponse(BaseModel):
+    campaign_id: uuid.UUID
+    funnel: dict[str, int]
+    cost_units_total: float
+    cost_units_per_meeting: float | None
+    #: Omitted (None) unless RELAY_COST_UNIT_USD is calibrated.
+    cost_usd_per_meeting: float | None

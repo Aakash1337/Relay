@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     compute_timeout_seconds: float = Field(default=60.0, gt=0)
     compute_max_output_tokens: int = Field(default=1024, ge=64)
 
+    # USD per guardrail cost unit, for the economics projection. 0 (default)
+    # means "not calibrated" and the USD figure is omitted, not guessed.
+    cost_unit_usd: float = Field(default=0.0, ge=0)
+
     # ── Pipeline decision thresholds (Phase 1A) ─────────────────────────────
     # Leads scoring below this are scored_rejected. Default sits below the
     # offline backend's floor (0.35) so hermetic runs qualify by default;
