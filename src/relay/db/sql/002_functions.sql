@@ -550,3 +550,58 @@ BEGIN
   RETURN NEW;
 END
 $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- Replies: content is immutable after insert; the only legal UPDATE is
+-- writing the triage outcome, exactly once. A reply is evidence — what
+-- the prospect actually said — and evidence does not get edited.
+-- ─────────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION fn_reply_triage_guard() RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.tenant_id    IS DISTINCT FROM OLD.tenant_id
+     OR NEW.id          IS DISTINCT FROM OLD.id
+     OR NEW.lead_id     IS DISTINCT FROM OLD.lead_id
+     OR NEW.campaign_id IS DISTINCT FROM OLD.campaign_id
+     OR NEW.send_job_id IS DISTINCT FROM OLD.send_job_id
+     OR NEW.simulated   IS DISTINCT FROM OLD.simulated
+     OR NEW.subject     IS DISTINCT FROM OLD.subject
+     OR NEW.body        IS DISTINCT FROM OLD.body
+     OR NEW.received_at IS DISTINCT FROM OLD.received_at
+     OR NEW.created_at  IS DISTINCT FROM OLD.created_at
+  THEN
+    RAISE EXCEPTION 'reply content is immutable (only triage columns may change)'
+      USING ERRCODE = 'check_violation';
+  END IF;
+
+  IF OLD.triage_category IS NOT NULL
+     AND (NEW.triage_category   IS DISTINCT FROM OLD.triage_category
+          OR NEW.triage_confidence IS DISTINCT FROM OLD.triage_confidence
+          OR NEW.triaged_at        IS DISTINCT FROM OLD.triaged_at)
+  THEN
+    RAISE EXCEPTION 'reply triage is write-once'
+      USING ERRCODE = 'check_violation';
+  END IF;
+
+  IF NEW.triage_category IS NOT NULL AND NEW.triaged_at IS NULL THEN
+    NEW.triaged_at := now();
+  END IF;
+
+  RETURN NEW;
+END
+$$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- Draft reviews are append-only (the approval gate's paper trail). The app
+-- role also has no UPDATE grant; this trigger makes it structural for
+-- every role.
+-- ─────────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION fn_draft_reviews_append_only() RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'draft_reviews is append-only'
+    USING ERRCODE = 'check_violation';
+END
+$$;

@@ -13,6 +13,7 @@ import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
@@ -29,8 +30,14 @@ from relay.db.models import (
     SendJob,
     Tenant,
 )
-from relay.domain.approval import ApprovalError, approve_draft, reject_draft
+from relay.domain.approval import (
+    ApprovalError,
+    approve_draft,
+    reject_draft,
+    review_draft,
+)
 from relay.domain.state_machine import TransitionError
+from relay.economics import campaign_economics
 from relay.guardrails.harness import GuardrailViolation
 from relay.hashing import email_domain, hash_api_key, hash_email
 from relay.logs import get_logger
@@ -376,6 +383,121 @@ def reject(
         except (ApprovalError, TransitionError, IntegrityError) as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         return {"status": "rejected"}
+
+
+@router.get(
+    "/outreach-drafts/pending",
+    response_model=schemas.PendingDraftsResponse,
+)
+def pending_drafts(
+    tenant_id: uuid.UUID = Depends(require_tenant),
+) -> schemas.PendingDraftsResponse:
+    """The reviewer's queue: drafts waiting at the human gate."""
+    with tenant_session(tenant_id) as session:
+        rows = session.execute(
+            select(OutreachDraft, Lead)
+            .join(
+                Lead,
+                (Lead.tenant_id == OutreachDraft.tenant_id)
+                & (Lead.id == OutreachDraft.lead_id),
+            )
+            .where(OutreachDraft.status == "pending_approval")
+            .order_by(OutreachDraft.created_at)
+        ).all()
+        return schemas.PendingDraftsResponse(
+            drafts=[
+                schemas.PendingDraftItem(
+                    draft_id=draft.id,
+                    lead_id=lead.id,
+                    campaign_id=draft.campaign_id,
+                    version=draft.version,
+                    subject=draft.subject,
+                    body=draft.body,
+                    personalization_sources=draft.personalization_sources or {},
+                    lead_first_name=lead.first_name,
+                    lead_company=lead.company_name,
+                    lead_state=lead.state,
+                    created_at=draft.created_at,
+                )
+                for draft, lead in rows
+            ]
+        )
+
+
+@router.post(
+    "/outreach-drafts/{draft_id}/review",
+    response_model=schemas.ReviewResponse,
+)
+def review(
+    draft_id: uuid.UUID,
+    body: schemas.ReviewRequest,
+    tenant_id: uuid.UUID = Depends(require_tenant),
+) -> schemas.ReviewResponse:
+    """The rubric review endpoint — approve / approve-with-edits / reject.
+
+    Like /approve, this NEVER sends; it only moves content through the
+    human gate with a recorded, append-only rubric decision.
+    """
+    with tenant_session(tenant_id) as session:
+        draft = session.get(OutreachDraft, draft_id)
+        if draft is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "draft not found")
+        try:
+            outcome = review_draft(
+                session,
+                draft=draft,
+                reviewer=body.reviewer,
+                decision=body.decision,
+                reasons=body.reasons,
+                notes=body.notes,
+                edited_subject=body.edited_subject,
+                edited_body=body.edited_body,
+            )
+        except (ApprovalError, ValueError, TransitionError, IntegrityError) as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        lead = session.get(Lead, draft.lead_id)
+        assert lead is not None
+        return schemas.ReviewResponse(
+            review_id=outcome.review_id,
+            draft_id=draft_id,
+            decision=outcome.decision,
+            active_draft_id=outcome.active_draft_id,
+            lead_state=lead.state,
+        )
+
+
+# ── The approval UI: a static page, credentials stay client-side ────────────
+
+
+@router.get("/review", include_in_schema=False)
+def review_page() -> HTMLResponse:
+    from relay.api.review_ui import REVIEW_PAGE
+
+    return HTMLResponse(REVIEW_PAGE)
+
+
+# ── Economics gate (Phase 1A) ────────────────────────────────────────────────
+
+
+@router.get(
+    "/campaigns/{campaign_id}/economics",
+    response_model=schemas.EconomicsResponse,
+)
+def economics(
+    campaign_id: uuid.UUID,
+    tenant_id: uuid.UUID = Depends(require_tenant),
+) -> schemas.EconomicsResponse:
+    with tenant_session(tenant_id) as session:
+        if session.get(Campaign, campaign_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "campaign not found")
+    report = campaign_economics(tenant_id, campaign_id)
+    return schemas.EconomicsResponse(
+        campaign_id=report.campaign_id,
+        funnel=report.funnel,
+        cost_units_total=report.cost_units_total,
+        cost_units_per_meeting=report.cost_units_per_meeting,
+        cost_usd_per_meeting=report.cost_usd_per_meeting,
+    )
 
 
 # ── Internal: spine-triggered worker tick (admin token, not tenant key) ─────

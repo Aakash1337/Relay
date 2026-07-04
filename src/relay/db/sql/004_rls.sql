@@ -42,7 +42,7 @@ BEGIN
   FOREACH t IN ARRAY ARRAY[
     'lead_source_register', 'campaigns', 'leads', 'lead_transitions',
     'suppression', 'outreach_drafts', 'send_jobs', 'audit_log',
-    'pipeline_runs'
+    'pipeline_runs', 'replies', 'draft_reviews'
   ]
   LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
@@ -79,6 +79,11 @@ GRANT SELECT, INSERT, UPDATE ON outreach_drafts TO relay_app;
 GRANT SELECT, INSERT, UPDATE ON send_jobs TO relay_app;
 GRANT SELECT, INSERT ON audit_log TO relay_app;
 GRANT SELECT, INSERT, UPDATE ON pipeline_runs TO relay_app;
+-- UPDATE only to record the triage outcome; the body itself is frozen by
+-- fn_reply_triage_guard (triggers file).
+GRANT SELECT, INSERT, UPDATE ON replies TO relay_app;
+-- Reviews are append-only for the app role: no UPDATE grant, by design.
+GRANT SELECT, INSERT ON draft_reviews TO relay_app;
 
 -- No DELETE grants anywhere: Phase 0 has no deletion path. The DSR /
 -- right-to-be-forgotten workflow (Phase 1B) will add a dedicated,

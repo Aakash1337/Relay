@@ -79,3 +79,15 @@ DROP TRIGGER IF EXISTS trg_tenant_immutable ON pipeline_runs;
 CREATE TRIGGER trg_tenant_immutable
   BEFORE UPDATE ON pipeline_runs
   FOR EACH ROW EXECUTE FUNCTION fn_tenant_immutable();
+
+-- Replies (inbound; simulated in Phase 1A) -----------------------------------
+DROP TRIGGER IF EXISTS trg_reply_triage_guard ON replies;
+CREATE TRIGGER trg_reply_triage_guard
+  BEFORE UPDATE ON replies
+  FOR EACH ROW EXECUTE FUNCTION fn_reply_triage_guard();
+
+-- Draft reviews are append-only ----------------------------------------------
+DROP TRIGGER IF EXISTS trg_draft_reviews_append_only ON draft_reviews;
+CREATE TRIGGER trg_draft_reviews_append_only
+  BEFORE UPDATE OR DELETE ON draft_reviews
+  FOR EACH ROW EXECUTE FUNCTION fn_draft_reviews_append_only();

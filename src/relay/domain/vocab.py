@@ -27,6 +27,40 @@ class LawfulBasis(StrEnum):
 SIMULATED_SAFE_BASES: frozenset[LawfulBasis] = frozenset(LawfulBasis)
 
 
+class ReviewDecision(StrEnum):
+    """The three outcomes of the human approval rubric (Phase 1A)."""
+
+    APPROVED = "approved"
+    APPROVED_WITH_EDITS = "approved_with_edits"
+    REJECTED = "rejected"
+
+
+class ReviewReason(StrEnum):
+    """Controlled rubric vocabulary for edit/reject reasons.
+
+    A controlled set (not free text) so review outcomes are aggregable:
+    'why do drafts get rejected' must be a GROUP BY, because that metric
+    steers prompt iteration and the Phase 1A economics gate.
+    """
+
+    INACCURATE_CLAIM = "inaccurate_claim"
+    WEAK_PERSONALIZATION = "weak_personalization"
+    WRONG_PERSON = "wrong_person"
+    TONE = "tone"
+    TOO_LONG = "too_long"
+    COMPLIANCE_RISK = "compliance_risk"
+    SUSPECTED_INJECTION = "suspected_injection"
+    OTHER = "other"
+
+
+class TriageCategory(StrEnum):
+    """Reply-triage outcomes; each maps to exactly one lead state."""
+
+    INTERESTED = "interested"
+    NOT_INTERESTED = "not_interested"
+    UNSUBSCRIBED = "unsubscribed"
+
+
 def sql_in_list(values: type[StrEnum]) -> str:
     """Render an enum as a SQL IN-list literal, e.g. 'a', 'b', 'c'."""
     return ", ".join(f"'{v}'" for v in values)

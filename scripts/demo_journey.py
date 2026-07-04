@@ -105,6 +105,12 @@ def main() -> None:
     )
 
     # 7. Continue to the end: simulated reply → triage → booked → closed.
+    # Pin an 'interested' reply so the demo shows the booking branch —
+    # left to its hash-derived persona the prospect might decline.
+    from relay.synthetic.generator import ReplyIntent
+    from relay.synthetic.seed import create_simulated_reply
+
+    create_simulated_reply(tenant_id, lead_id, intent=ReplyIntent.INTERESTED)
     outcome = PipelineRunner(tenant_id, lead_id=lead_id).run()
     print(f"→ finished at {outcome.final_state} ({outcome.stopped_on})")
 

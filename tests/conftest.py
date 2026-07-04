@@ -17,6 +17,19 @@ os.environ.setdefault(
     "postgresql+psycopg://relay_app:relay_app@127.0.0.1:5433/relay_test",
 )
 os.environ.setdefault("RELAY_ADMIN_TOKEN", "test-admin-token")
+# Hermeticity: a developer's .env may point the compute tiers at real
+# providers (Gemini/Gemma/Claude) — tests must never inherit that.
+# Environment variables outrank the .env file for pydantic-settings, so
+# these pins win over any local configuration.
+os.environ.setdefault("RELAY_COMPUTE_LOCAL_BACKEND", "offline")
+os.environ.setdefault("RELAY_COMPUTE_HOSTED_BACKEND", "offline")
+os.environ.setdefault("RELAY_LOCAL_MODEL", "")
+os.environ.setdefault("RELAY_HOSTED_MODEL", "")
+os.environ.setdefault("RELAY_GOOGLE_API_KEY", "")
+os.environ.setdefault("RELAY_ANTHROPIC_API_KEY", "")
+os.environ.setdefault("RELAY_CRM_BACKEND", "none")
+os.environ.setdefault("RELAY_FIT_SCORE_THRESHOLD", "0.3")
+os.environ.setdefault("RELAY_COMPUTE_MAX_OUTPUT_TOKENS", "1024")
 
 import pytest  # noqa: E402
 from sqlalchemy import select  # noqa: E402
@@ -42,6 +55,8 @@ from relay.workers.send_worker import process_pending  # noqa: E402
 
 _TABLES = (
     "audit_log",
+    "draft_reviews",
+    "replies",
     "send_jobs",
     "outreach_drafts",
     "suppression",
@@ -225,5 +240,36 @@ def walk_to_sent(tenant_id: uuid.UUID, lead_id: uuid.UUID) -> None:
 
 def walk_to_closed(tenant_id: uuid.UUID, lead_id: uuid.UUID) -> None:
     walk_to_sent(tenant_id, lead_id)
+    # Pin the reply intent: the hash-derived persona could just as well
+    # decline or unsubscribe, and this helper promises 'closed'.
+    from relay.synthetic.generator import ReplyIntent
+    from relay.synthetic.seed import create_simulated_reply
+
+    create_simulated_reply(tenant_id, lead_id, intent=ReplyIntent.INTERESTED)
     outcome = PipelineRunner(tenant_id, lead_id=lead_id).run()
     assert outcome.final_state == "closed", outcome
+
+
+# ── API fixtures (shared by the HTTP test modules) ──────────────────────────
+
+ADMIN = {"X-Admin-Token": "test-admin-token"}
+
+
+@pytest.fixture
+def client(_database):
+    from fastapi.testclient import TestClient
+
+    from relay.api.app import app
+
+    return TestClient(app)
+
+
+@pytest.fixture
+def api_tenant(client) -> dict:
+    response = client.post(
+        "/tenants",
+        json={"name": f"api-tenant-{uuid.uuid4().hex[:8]}"},
+        headers=ADMIN,
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
