@@ -91,3 +91,8 @@ DROP TRIGGER IF EXISTS trg_draft_reviews_append_only ON draft_reviews;
 CREATE TRIGGER trg_draft_reviews_append_only
   BEFORE UPDATE OR DELETE ON draft_reviews
   FOR EACH ROW EXECUTE FUNCTION fn_draft_reviews_append_only();
+
+DROP TRIGGER IF EXISTS trg_tenant_immutable ON data_preflight;
+CREATE TRIGGER trg_tenant_immutable
+  BEFORE UPDATE ON data_preflight
+  FOR EACH ROW EXECUTE FUNCTION fn_tenant_immutable();

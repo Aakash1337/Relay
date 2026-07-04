@@ -26,7 +26,11 @@ from sqlalchemy.orm import Session
 from relay.config import get_settings
 from relay.db.models import Campaign, Lead, OutreachDraft, SendJob
 from relay.domain.suppression import is_suppressed
-from relay.domain.vocab import SIMULATED_SAFE_BASES
+from relay.domain.vocab import (
+    REAL_DATA_BASES,
+    SIMULATED_SAFE_BASES,
+    LawfulBasis,
+)
 from relay.logs import get_logger
 
 log = get_logger(__name__)
@@ -101,6 +105,17 @@ def evaluate(
         f"lawful_basis={lead.lawful_basis}, region={lead.region_assumption} "
         "(region-specific rules land with the Legal/Data Preflight, "
         "Phase 1B)",
+    )
+    # Phase 1B invariant: real-person leads are draft-only. The send path
+    # (even a simulated one) opens for them in Phase 1C behind its own
+    # gates. Re-checked structurally by fn_send_jobs_guard.
+    real_person = LawfulBasis(lead.lawful_basis) in REAL_DATA_BASES
+    check(
+        "send_path_open_for_basis",
+        not real_person,
+        "Phase 1B: real-data leads stop at draft; sending opens in 1C"
+        if real_person
+        else "compliance-free basis",
     )
     check(
         "approved_draft_current_version",

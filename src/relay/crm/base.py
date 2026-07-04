@@ -42,3 +42,9 @@ class CRMAdapter(Protocol):
     def record_event(self, external_ref: str, kind: str, detail: str) -> None:
         """Attach an activity/note to the mirrored lead."""
         ...  # pragma: no cover
+
+    def delete_lead(self, external_ref: str) -> bool:
+        """Remove the mirror row (DSR/retention). Returns True if a row
+        was removed, False if none existed. Raises CRMError on failure —
+        deletion outcomes are reported truthfully, never assumed."""
+        ...  # pragma: no cover

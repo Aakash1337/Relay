@@ -20,6 +20,7 @@ dependencies = [
 [project.scripts]
 relay-migrate = "relay.db.migrate:main"
 relay-worker = "relay.workers.send_worker:main"
+relay-retention = "relay.workers.retention_worker:main"
 
 [build-system]
 requires = ["hatchling"]

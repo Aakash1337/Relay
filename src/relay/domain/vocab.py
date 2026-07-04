@@ -26,6 +26,17 @@ class LawfulBasis(StrEnum):
 #: Legal/Data Preflight in Phase 1B.
 SIMULATED_SAFE_BASES: frozenset[LawfulBasis] = frozenset(LawfulBasis)
 
+#: Bases that involve no real person's data — compliance-free testing.
+#: Everything else asserts lawful processing of a REAL person and is
+#: gated behind the tenant's approved Legal/Data Preflight (Phase 1B).
+#: NOTE: fn_lead_insert_guard and fn_send_jobs_guard hardcode this pair
+#: in SQL; a pin test (tests/test_phase1b_gate.py) keeps them in lockstep.
+COMPLIANCE_FREE_BASES: frozenset[LawfulBasis] = frozenset(
+    {LawfulBasis.SYNTHETIC, LawfulBasis.TEST_CONSENT}
+)
+
+REAL_DATA_BASES: frozenset[LawfulBasis] = frozenset(LawfulBasis) - COMPLIANCE_FREE_BASES
+
 
 class ReviewDecision(StrEnum):
     """The three outcomes of the human approval rubric (Phase 1A)."""

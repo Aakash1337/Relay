@@ -18,3 +18,6 @@ class InMemoryCRM:
 
     def record_event(self, external_ref: str, kind: str, detail: str) -> None:
         self.events.append((external_ref, kind, detail))
+
+    def delete_lead(self, external_ref: str) -> bool:
+        return self.leads.pop(external_ref, None) is not None

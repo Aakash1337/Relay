@@ -146,6 +146,43 @@ BEGIN
       USING ERRCODE = 'check_violation';
   END IF;
 
+  -- ── Phase 1B: real-person data is gated by the Legal/Data Preflight ──
+  -- 'synthetic' and 'test_consent' involve no real person (kept in
+  -- lockstep with relay.domain.vocab.COMPLIANCE_FREE_BASES by a pin
+  -- test). Every other lawful basis asserts processing of a REAL
+  -- person's data and requires:
+  --   1. an approved, unrevoked preflight record for the tenant;
+  --   2. a real deliverable domain (reserved/test TLDs are a category
+  --      error on a real person's address);
+  --   3. an explicit retention deadline (the purge worker enforces it).
+  IF NEW.lawful_basis NOT IN ('synthetic', 'test_consent') THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM data_preflight
+      WHERE tenant_id = NEW.tenant_id AND revoked_at IS NULL
+    ) THEN
+      RAISE EXCEPTION
+        'real-data ingestion (lawful_basis %) requires an approved '
+        'Legal/Data Preflight for this tenant', NEW.lawful_basis
+        USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF NEW.email_domain ~* '(^|\.)(test|invalid|localhost)$'
+       OR NEW.email_domain ~* '(^|\.)example\.(com|net|org)$'
+       OR NEW.email_domain ~* '(^|\.)example$' THEN
+      RAISE EXCEPTION
+        'reserved/test domain % is not valid for real-data lawful basis %',
+        NEW.email_domain, NEW.lawful_basis
+        USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF NEW.retention_until IS NULL THEN
+      RAISE EXCEPTION
+        'real-data leads require retention_until (lawful_basis %)',
+        NEW.lawful_basis
+        USING ERRCODE = 'check_violation';
+    END IF;
+  END IF;
+
   RETURN NEW;
 END
 $$;
@@ -361,6 +398,17 @@ BEGIN
   IF NEW.mode = 'real' AND (v_lead.dry_run OR v_campaign.dry_run) THEN
     RAISE EXCEPTION
       'structural violation: real send job for dry-run lead/campaign'
+      USING ERRCODE = 'check_violation';
+  END IF;
+
+  -- Phase 1B invariant: a real person's lead is draft-only — no send job
+  -- in ANY mode. The send path for real-data bases opens in Phase 1C
+  -- behind deliverability + provider gates (this branch is what 1C
+  -- amends). Kept in lockstep with vocab.COMPLIANCE_FREE_BASES.
+  IF v_lead.lawful_basis NOT IN ('synthetic', 'test_consent') THEN
+    RAISE EXCEPTION
+      'phase 1B: send path is closed for real-data lawful basis %',
+      v_lead.lawful_basis
       USING ERRCODE = 'check_violation';
   END IF;
 
@@ -604,4 +652,88 @@ BEGIN
   RAISE EXCEPTION 'draft_reviews is append-only'
     USING ERRCODE = 'check_violation';
 END
+$$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- DSR erasure (Phase 1B): delete every row holding a person's data for
+-- one tenant, by email hash. SECURITY DEFINER because the app role has
+-- (deliberately) no DELETE grants anywhere — this function IS the
+-- "dedicated, audited path" those grants point to. Strictly tenant-
+-- guarded: callable only from a session pinned to the same tenant.
+--
+-- What it does NOT touch: the suppression entry (written by the caller
+-- first — the hashed do-not-contact memory is the point) and audit_log
+-- (append-only, PII-redacted before insert; it is the record THAT an
+-- erasure happened).
+-- ─────────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION fn_dsr_erase(
+  p_tenant uuid,
+  p_email_hash text
+) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_ctx uuid := fn_current_tenant();
+  v_lead_ids uuid[];
+  n_reviews bigint := 0;
+  n_replies bigint := 0;
+  n_jobs bigint := 0;
+  n_drafts bigint := 0;
+  n_transitions bigint := 0;
+  n_leads bigint := 0;
+BEGIN
+  IF v_ctx IS NULL OR p_tenant IS DISTINCT FROM v_ctx THEN
+    RAISE EXCEPTION 'cross-tenant or untenanted erasure rejected'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
+  SELECT COALESCE(array_agg(id), '{}') INTO v_lead_ids
+  FROM leads WHERE tenant_id = p_tenant AND email_hash = p_email_hash;
+
+  -- Children before parents (composite FKs have no ON DELETE CASCADE —
+  -- accidental deletion elsewhere must keep failing loudly).
+  DELETE FROM draft_reviews
+    WHERE tenant_id = p_tenant AND lead_id = ANY(v_lead_ids);
+  GET DIAGNOSTICS n_reviews = ROW_COUNT;
+  DELETE FROM replies
+    WHERE tenant_id = p_tenant AND lead_id = ANY(v_lead_ids);
+  GET DIAGNOSTICS n_replies = ROW_COUNT;
+  DELETE FROM send_jobs
+    WHERE tenant_id = p_tenant AND lead_id = ANY(v_lead_ids);
+  GET DIAGNOSTICS n_jobs = ROW_COUNT;
+  DELETE FROM outreach_drafts
+    WHERE tenant_id = p_tenant AND lead_id = ANY(v_lead_ids);
+  GET DIAGNOSTICS n_drafts = ROW_COUNT;
+  DELETE FROM lead_transitions
+    WHERE tenant_id = p_tenant AND lead_id = ANY(v_lead_ids);
+  GET DIAGNOSTICS n_transitions = ROW_COUNT;
+  DELETE FROM leads
+    WHERE tenant_id = p_tenant AND id = ANY(v_lead_ids);
+  GET DIAGNOSTICS n_leads = ROW_COUNT;
+
+  RETURN jsonb_build_object(
+    'lead_ids', to_jsonb(v_lead_ids),
+    'leads', n_leads,
+    'outreach_drafts', n_drafts,
+    'draft_reviews', n_reviews,
+    'replies', n_replies,
+    'send_jobs', n_jobs,
+    'lead_transitions', n_transitions
+  );
+END
+$$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- Which tenants hold leads past their retention deadline. The retention
+-- worker iterates these and purges each under that tenant's own RLS
+-- context — like the send worker, it never operates untenanted.
+-- ─────────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION fn_tenants_with_expired_leads()
+RETURNS SETOF uuid
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+  SELECT DISTINCT tenant_id FROM leads
+  WHERE retention_until IS NOT NULL AND retention_until <= now()
 $$;
