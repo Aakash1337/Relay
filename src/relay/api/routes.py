@@ -12,7 +12,7 @@ from __future__ import annotations
 import secrets
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from relay import audit
 from relay.api import schemas
 from relay.api.deps import require_admin, require_tenant
+from relay.config import get_settings
 from relay.db.engine import admin_session, tenant_session
 from relay.db.models import (
     Campaign,
@@ -41,6 +42,7 @@ from relay.domain.state_machine import TransitionError
 from relay.economics import campaign_economics
 from relay.guardrails.harness import GuardrailViolation
 from relay.hashing import email_domain, hash_api_key, hash_email
+from relay.ingest.ses_events import EventRejected, process_sns_envelope
 from relay.logs import get_logger
 from relay.observability import evaluate_alerts, prometheus_text, tenant_metrics
 from relay.pipeline.runner import PipelineRunner
@@ -647,6 +649,33 @@ def _preflight_status(tenant_id: uuid.UUID) -> schemas.PreflightStatusResponse:
         approved_at=record.approved_at,
         revoked_at=record.revoked_at,
     )
+
+
+# ── Provider webhooks (Phase 1C): SNS → SES events ─────────────────────────
+# SNS cannot send custom headers, so authentication is a token in the
+# URL, compared constant-time against configuration. Every envelope is
+# additionally signature-verified against the AWS signing certificate
+# before any content is trusted.
+
+
+@router.post("/webhooks/ses", include_in_schema=False)
+async def ses_webhook(request: Request, token: str = "") -> dict[str, int]:
+    settings_token = get_settings().ses_webhook_token
+    if settings_token is None or not secrets.compare_digest(
+        token, settings_token.get_secret_value()
+    ):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "bad webhook token")
+    body = await request.body()
+    try:
+        stats = process_sns_envelope(body)
+    except EventRejected as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return {
+        "bounces": stats.bounces,
+        "complaints": stats.complaints,
+        "deliveries": stats.deliveries,
+        "ignored": stats.ignored,
+    }
 
 
 # ── Internal: spine-triggered worker tick (admin token, not tenant key) ─────

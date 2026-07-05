@@ -11,8 +11,9 @@ good intentions.
 
 This repository currently implements **Phase 0 — Foundations &
 Scaffolding**, **Phase 1A — Synthetic dry-run MVP**, **Phase 1B —
-Real-data, no-send pilot**, and **Phase 2 — Reliability, observability
-& evaluation** of the
+Real-data, no-send pilot**, **Phase 2 — Reliability, observability &
+evaluation**, and **Phase 1C — Tiny real-send pilot** (SES sandbox,
+self-to-self) of the
 [development roadmap](RELAY-development-roadmap.md) (on the `Plan`
 branch, together with the full
 [project documentation](RELAY-project-documentation.md)): the pipeline
@@ -87,6 +88,21 @@ What Phase 1B still does NOT contain, by design: any real sending
 (Phase 1C: deliverability, provider approval, volume caps) — and the
 preflight *content* itself, which is a human/legal deliverable the
 system only records and enforces.
+
+---
+
+## What Phase 1C adds
+
+The first real emails — SES **sandbox**, self-to-self only, per the §6
+[sending-provider decision record](docs/decisions/sending-provider.md).
+
+| Capability | Where |
+| --- | --- |
+| **Provider seam** with the two operational shapes from §6: `DirectSender` (SES, implemented) and `EnrollmentSender` (Smartlead — interface + idempotency-boundary contract only; the adapter is deliberately deferred to real-prospect production). Config-selected via `RELAY_SENDER_PROVIDER`; default `none` keeps real sending structurally absent | `src/relay/senders/` |
+| **SES adapter**: SESv2 direct send with List-Unsubscribe/One-Click headers and a last-hop cross-check that the recipient hashes to the job's frozen identity | `senders/ses.py` |
+| **Real-mode eligibility, for real**: the seven checks are now config attests + live data — identity attest, domain-auth attest, daily volume cap, bounce/complaint reputation window, unsubscribe target, §6 record reference. Real sends are `test_consent`-only (our own inboxes), in code AND in the send-jobs trigger | `domain/eligibility.py`, `fn_send_jobs_guard` |
+| **SES event ingestion**: SNS envelopes, signature-verified against the AWS signing cert, via HTTPS webhook (`/webhooks/ses?token=…`) or SQS polling (`just events`) — hard bounces transition the lead and auto-suppress in one transaction; complaints suppress once; everything idempotent under provider redelivery | `src/relay/ingest/`, `workers/event_worker.py` |
+| **Live smoke checklist** for when AWS credentials/DNS land | `docs/phase1c-live-smoke.md` |
 
 ---
 

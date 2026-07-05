@@ -39,10 +39,35 @@ class Settings(BaseSettings):
     admin_token: SecretStr | None = None
 
     # ── Send safety ─────────────────────────────────────────────────────────
-    # Phase 0: no real sender exists. This flag is one of several independent
-    # layers (worker check, DB trigger, absent provider integration) that all
-    # must agree before a real send could ever occur.
+    # One of several independent layers (worker check, DB trigger, provider
+    # registry, eligibility attests) that ALL must agree before a real send
+    # can occur. Default false; nothing else matters while it is false.
     real_send_enabled: bool = False
+
+    # ── Real sender (Phase 1C — §6 decision record) ────────────────────────
+    # 'none' keeps real sending structurally absent (the Phase 0 posture).
+    # 'ses' is the pilot sender: SES SANDBOX, self-to-self only. The
+    # Smartlead enrollment adapter is deliberately deferred (see
+    # docs/decisions/sending-provider.md).
+    sender_provider: Literal["none", "ses"] = "none"
+    aws_region: str = ""
+    ses_from_address: str = ""
+    ses_configuration_set: str = ""
+    #: List-Unsubscribe target; required for real-mode eligibility.
+    unsubscribe_mailto: str = ""
+    # Operator attestations for the real-mode eligibility checks. Each one
+    # is a recorded human claim ("I verified this"), not a guess by code.
+    sender_identity_approved: bool = False
+    sender_domain_authenticated: bool = False
+    #: Path/anchor of the §6 decision record authorizing the provider.
+    provider_terms_record: str = ""
+    # Volume + reputation caps for the pilot.
+    real_send_daily_cap: int = Field(default=5, ge=0)
+    bounce_complaint_window_days: int = Field(default=7, ge=1)
+    max_bounces_complaints_in_window: int = Field(default=2, ge=0)
+    # SNS event ingestion (webhook token and/or SQS polling).
+    ses_webhook_token: SecretStr | None = None
+    sqs_queue_url: str = ""
 
     # ── Guardrails (dumb limits — the harness, not the planner) ────────────
     max_iterations_default: int = Field(default=100, ge=1)

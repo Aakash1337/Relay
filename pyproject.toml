@@ -15,12 +15,15 @@ dependencies = [
     "anthropic>=0.69",
     "httpx>=0.27.0",
     "faker>=40.28.1",
+    "boto3>=1.43.40",
+    "cryptography>=49.0.0",
 ]
 
 [project.scripts]
 relay-migrate = "relay.db.migrate:main"
 relay-worker = "relay.workers.send_worker:main"
 relay-retention = "relay.workers.retention_worker:main"
+relay-events = "relay.workers.event_worker:main"
 
 [build-system]
 requires = ["hatchling"]

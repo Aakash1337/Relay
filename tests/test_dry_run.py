@@ -16,7 +16,6 @@ from relay.db.engine import tenant_session
 from relay.db.models import Lead, SendJob
 from relay.pipeline.runner import PipelineRunner
 from relay.senders import (
-    RealSender,
     RealSendUnavailable,
     SimulatedSender,
     sender_for_mode,
@@ -115,24 +114,20 @@ def test_dry_run_flag_is_immutable_on_leads(tenant_a, factory_a):
             session.flush()
 
 
-def test_real_sender_cannot_even_be_constructed():
-    with pytest.raises(RealSendUnavailable, match="Phase 0"):
-        RealSender()
-
-
 def test_sender_for_real_mode_refuses_while_disabled():
     assert get_settings().real_send_enabled is False
     with pytest.raises(RealSendUnavailable, match="disabled"):
         sender_for_mode("real")
 
 
-def test_sender_for_real_mode_refuses_even_if_flag_flipped(monkeypatch):
-    """Even with RELAY_REAL_SEND_ENABLED=true, the Phase 0 sender layer
-    has no real implementation to hand back — construction refuses."""
+def test_sender_for_real_mode_refuses_without_a_provider(monkeypatch):
+    """Even with RELAY_REAL_SEND_ENABLED=true, the default configuration
+    has no provider to hand back (RELAY_SENDER_PROVIDER=none) — real
+    sending stays structurally absent, exactly the Phase 0 posture."""
     monkeypatch.setenv("RELAY_REAL_SEND_ENABLED", "true")
     get_settings.cache_clear()
     try:
-        with pytest.raises(RealSendUnavailable, match="Phase 0"):
+        with pytest.raises(RealSendUnavailable, match="structurally absent"):
             sender_for_mode("real")
     finally:
         monkeypatch.delenv("RELAY_REAL_SEND_ENABLED")
@@ -144,7 +139,7 @@ def test_simulated_sender_never_touches_network(tenant_a, factory_a):
     the job alone."""
     tenant_id, _ = tenant_a
     _, job = _queue_lead(tenant_id, factory_a)
-    message_id = SimulatedSender().send(job=job, draft=None)  # type: ignore[arg-type]
+    message_id = SimulatedSender().send(job=job, draft=None, lead=None)  # type: ignore[arg-type]
     assert message_id == f"simulated-{job.id}"
 
 

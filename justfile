@@ -89,6 +89,10 @@ worker:
 retention:
     uv run relay-retention
 
+# Drain the SES/SNS event queue once (bounces/complaints -> suppression)
+events:
+    uv run relay-events
+
 # Run reasoning evals against the configured backends (spends real quota)
 evals which="both":
     uv run python scripts/run_evals.py {{which}}

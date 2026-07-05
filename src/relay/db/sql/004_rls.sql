@@ -115,3 +115,6 @@ GRANT EXECUTE ON FUNCTION fn_tenants_with_expired_leads() TO relay_app;
 REVOKE ALL ON FUNCTION fn_tenants_with_stale_work(double precision) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION fn_tenants_with_stale_work(double precision)
   TO relay_app;
+
+REVOKE ALL ON FUNCTION fn_tenants_for_recipient_hash(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION fn_tenants_for_recipient_hash(text) TO relay_app;

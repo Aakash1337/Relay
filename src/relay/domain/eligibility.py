@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from relay.config import get_settings
-from relay.db.models import Campaign, Lead, OutreachDraft, SendJob
+from relay.db.models import Campaign, Lead, OutreachDraft, SendJob, Suppression
 from relay.domain.suppression import is_suppressed
 from relay.domain.vocab import (
     REAL_DATA_BASES,
@@ -146,7 +147,9 @@ def evaluate(
         "duplicate send job exists" if duplicate else "unused",
     )
 
-    # ── Real-infrastructure checks: hard failures for real mode ────────────
+    # ── Real-infrastructure checks (Phase 1C: config attests + live data) ──
+    # Each attest is a recorded human claim in deployment config, not a
+    # guess by code; the caps are computed live from the datastore.
     if mode == "real":
         settings = get_settings()
         check(
@@ -154,35 +157,70 @@ def evaluate(
             settings.real_send_enabled,
             "RELAY_REAL_SEND_ENABLED is false",
         )
+        # §6 pilot rule: real sends go ONLY to inboxes whose owners
+        # explicitly consented to testing (our own). Re-checked by the
+        # DB trigger. Opens beyond test_consent only with the production
+        # provider work in the §6 revisit criteria.
+        check(
+            "real_mode_basis_is_test_consent",
+            lead.lawful_basis == str(LawfulBasis.TEST_CONSENT),
+            f"1C pilot sends only to test_consent inboxes "
+            f"(lawful_basis={lead.lawful_basis})",
+        )
         check(
             "sender_identity_approved",
-            False,
-            "no approved sender identity exists (Phase 1C)",
+            settings.sender_provider != "none"
+            and bool(settings.ses_from_address)
+            and settings.sender_identity_approved,
+            "requires RELAY_SENDER_PROVIDER, RELAY_SES_FROM_ADDRESS and "
+            "the RELAY_SENDER_IDENTITY_APPROVED attest",
         )
         check(
             "domain_authenticated",
-            False,
-            "SPF/DKIM/DMARC not configured (Phase 1C/3 deliverability)",
+            settings.sender_domain_authenticated,
+            "SPF/DKIM/DMARC attest missing (RELAY_SENDER_DOMAIN_AUTHENTICATED)",
         )
+        recent_real_sends = session.execute(
+            select(func.count()).where(
+                SendJob.tenant_id == lead.tenant_id,
+                SendJob.mode == "real",
+                SendJob.status.in_(("sending", "sent")),
+                SendJob.queued_at >= datetime.now(tz=UTC) - timedelta(hours=24),
+            )
+        ).scalar_one()
         check(
             "mailbox_active_below_cap",
-            False,
-            "no mailbox infrastructure exists (Phase 1C)",
+            recent_real_sends < settings.real_send_daily_cap,
+            f"{recent_real_sends} real sends in 24h "
+            f"(cap {settings.real_send_daily_cap})",
         )
+        window_start = datetime.now(tz=UTC) - timedelta(
+            days=settings.bounce_complaint_window_days
+        )
+        recent_bounces = session.execute(
+            select(func.count()).where(
+                Suppression.tenant_id == lead.tenant_id,
+                Suppression.reason.in_(("hard_bounce", "complaint")),
+                Suppression.created_at >= window_start,
+            )
+        ).scalar_one()
         check(
             "campaign_below_thresholds",
-            False,
-            "complaint/bounce threshold policies land in Phase 3",
+            recent_bounces < settings.max_bounces_complaints_in_window,
+            f"{recent_bounces} bounces/complaints in "
+            f"{settings.bounce_complaint_window_days}d window "
+            f"(max {settings.max_bounces_complaints_in_window})",
         )
         check(
             "unsubscribe_mechanism_present",
-            False,
-            "unsubscribe headers require a sending provider (Phase 1C)",
+            bool(settings.unsubscribe_mailto),
+            "RELAY_UNSUBSCRIBE_MAILTO not set (List-Unsubscribe header)",
         )
         check(
             "provider_terms_allow",
-            False,
-            "Sending Provider Decision Record not completed (§6)",
+            bool(settings.provider_terms_record),
+            "RELAY_PROVIDER_TERMS_RECORD must reference the §6 decision "
+            "record authorizing this provider",
         )
 
     result = EligibilityResult(tuple(checks))

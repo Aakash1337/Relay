@@ -1,0 +1,96 @@
+"""Amazon SES sender (Phase 1C pilot — sandbox, self-to-self only).
+
+Direct-send shape: RELAY owns the send moment; delivery outcome arrives
+asynchronously via SNS (relay.ingest.ses_events). In sandbox mode SES
+itself refuses any recipient that is not a verified identity, which
+makes emailing a stranger structurally impossible during the pilot —
+that property comes from AWS, on top of every RELAY gate.
+
+Defense in depth at the last hop: the recipient handed to SES is
+re-derived from the LEAD row and cross-checked against the job's frozen
+recipient hash. A job whose hash does not match its lead's address was
+already impossible to insert (DB trigger); this catches the same class
+of tampering at the final boundary too.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from relay.config import get_settings
+from relay.db.models import Lead, OutreachDraft, SendJob
+from relay.hashing import hash_email
+from relay.logs import get_logger
+from relay.senders.base import RealSendUnavailable
+
+log = get_logger(__name__)
+
+
+class SESSender:
+    name = "ses"
+
+    def __init__(self, *, client: Any | None = None) -> None:
+        settings = get_settings()
+        if not settings.ses_from_address:
+            raise RealSendUnavailable(
+                "RELAY_SES_FROM_ADDRESS must be set to use the ses sender"
+            )
+        if client is None:
+            if not settings.aws_region:
+                raise RealSendUnavailable(
+                    "RELAY_AWS_REGION must be set to use the ses sender"
+                )
+            import boto3  # deferred: not needed when the sender is unused
+
+            client = boto3.client("sesv2", region_name=settings.aws_region)
+        self._client = client
+        self._from_address = settings.ses_from_address
+        self._configuration_set = settings.ses_configuration_set
+        self._unsubscribe_mailto = settings.unsubscribe_mailto
+
+    def send(self, *, job: SendJob, draft: OutreachDraft, lead: Lead) -> str:
+        # Last-hop cross-check: the address we are about to hand to the
+        # provider must hash to the job's frozen recipient identity.
+        if hash_email(lead.email) != job.recipient_email_hash:
+            raise RealSendUnavailable(
+                "refusing send: lead address does not match the job's "
+                "frozen recipient hash"
+            )
+
+        headers = []
+        if self._unsubscribe_mailto:
+            headers = [
+                {
+                    "Name": "List-Unsubscribe",
+                    "Value": f"<mailto:{self._unsubscribe_mailto}>",
+                },
+                {
+                    "Name": "List-Unsubscribe-Post",
+                    "Value": "List-Unsubscribe=One-Click",
+                },
+            ]
+
+        request: dict[str, Any] = {
+            "FromEmailAddress": self._from_address,
+            "Destination": {"ToAddresses": [lead.email]},
+            "Content": {
+                "Simple": {
+                    "Subject": {"Data": draft.subject, "Charset": "UTF-8"},
+                    "Body": {"Text": {"Data": draft.body, "Charset": "UTF-8"}},
+                    **({"Headers": headers} if headers else {}),
+                }
+            },
+        }
+        if self._configuration_set:
+            request["ConfigurationSetName"] = self._configuration_set
+
+        response = self._client.send_email(**request)
+        message_id = response["MessageId"]
+        log.info(
+            "ses send executed",
+            send_job_id=str(job.id),
+            lead_id=str(job.lead_id),
+            recipient_hash=job.recipient_email_hash,
+            provider_message_id=message_id,
+        )
+        return message_id

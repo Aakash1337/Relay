@@ -160,7 +160,7 @@ def _process_one(tenant_id: uuid.UUID, stats: WorkerStats) -> bool:
             session.flush()
 
             sender = sender_for_mode(job.mode)
-            message_id = sender.send(job=job, draft=draft)
+            message_id = sender.send(job=job, draft=draft, lead=lead)
 
             job.status = "sent"
             job.provider_message_id = message_id
