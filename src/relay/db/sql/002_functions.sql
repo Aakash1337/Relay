@@ -531,14 +531,20 @@ BEGIN
         USING ERRCODE = 'check_violation';
     END IF;
 
-    -- Content is frozen the moment a draft is approved, and can never
-    -- change while it stays approved.
-    IF OLD.status = 'approved' AND (
+    -- Content is frozen at approval and can never change afterwards. This
+    -- fires on BOTH the approving transition (NEW.status='approved',
+    -- OLD.status='pending_approval') and any later update while approved --
+    -- so a single UPDATE cannot flip status to 'approved' AND swap in
+    -- unreviewed body/subject text in the same statement (which would make
+    -- the human gate bless text no human saw). Legitimate approval only
+    -- changes status + approver metadata; a human EDIT goes through a new
+    -- draft version (approved_with_edits), never by mutating this row's
+    -- content on the approving write.
+    IF (NEW.status = 'approved' OR OLD.status = 'approved') AND (
          NEW.subject IS DISTINCT FROM OLD.subject
       OR NEW.body IS DISTINCT FROM OLD.body
-      OR NEW.status IS DISTINCT FROM OLD.status
     ) THEN
-      RAISE EXCEPTION 'an approved draft is immutable (content frozen)'
+      RAISE EXCEPTION 'approved draft content is immutable (frozen at approval)'
         USING ERRCODE = 'check_violation';
     END IF;
 

@@ -55,10 +55,14 @@ def _build(tier: ComputeTier) -> ComputeBackend:
         from relay.compute.google_api import GoogleGeminiBackend
 
         return GoogleGeminiBackend(model=model)
-    # "anthropic" — the Literal type admits nothing else.
-    from relay.compute.anthropic_api import AnthropicBackend
+    if choice == "anthropic":
+        from relay.compute.anthropic_api import AnthropicBackend
 
-    return AnthropicBackend(model=model)
+        return AnthropicBackend(model=model)
+    # Fail loudly if the config Literal was extended but this registry was
+    # not taught to build the new backend — never silently fall through to
+    # some other provider.
+    raise ComputeConfigError(f"unhandled compute backend {choice!r}")
 
 
 def backend_for(tier: ComputeTier) -> ComputeBackend:

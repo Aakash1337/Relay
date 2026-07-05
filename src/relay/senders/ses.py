@@ -29,8 +29,23 @@ log = get_logger(__name__)
 class SESSender:
     name = "ses"
 
+    @staticmethod
+    def config_error() -> str | None:
+        """Provider-neutral readiness probe (no client construction, no
+        network): returns a reason string if this sender could not be
+        built and used, else None. The eligibility gate consults this via
+        the registry instead of reading SES-specific settings directly."""
+        settings = get_settings()
+        if not settings.ses_from_address:
+            return "RELAY_SES_FROM_ADDRESS not set"
+        if not settings.aws_region:
+            return "RELAY_AWS_REGION not set"
+        return None
+
     def __init__(self, *, client: Any | None = None) -> None:
         settings = get_settings()
+        # from_address is used by send() itself, so it is required even with
+        # an injected client; region is only needed to build the real one.
         if not settings.ses_from_address:
             raise RealSendUnavailable(
                 "RELAY_SES_FROM_ADDRESS must be set to use the ses sender"
@@ -47,6 +62,7 @@ class SESSender:
         self._from_address = settings.ses_from_address
         self._configuration_set = settings.ses_configuration_set
         self._unsubscribe_mailto = settings.unsubscribe_mailto
+        self._unsubscribe_url = settings.unsubscribe_url
 
     def send(self, *, job: SendJob, draft: OutreachDraft, lead: Lead) -> str:
         # Last-hop cross-check: the address we are about to hand to the
@@ -57,18 +73,25 @@ class SESSender:
                 "frozen recipient hash"
             )
 
-        headers = []
+        # List-Unsubscribe can carry a mailto and/or an https URL. RFC 8058
+        # one-click (List-Unsubscribe-Post) is only valid when an https URL
+        # is present — a mailto cannot honor a one-click POST — so we
+        # advertise One-Click ONLY when a URL is configured.
+        targets = []
+        if self._unsubscribe_url:
+            targets.append(f"<{self._unsubscribe_url}>")
         if self._unsubscribe_mailto:
-            headers = [
-                {
-                    "Name": "List-Unsubscribe",
-                    "Value": f"<mailto:{self._unsubscribe_mailto}>",
-                },
+            targets.append(f"<mailto:{self._unsubscribe_mailto}>")
+        headers = []
+        if targets:
+            headers.append({"Name": "List-Unsubscribe", "Value": ", ".join(targets)})
+        if self._unsubscribe_url:
+            headers.append(
                 {
                     "Name": "List-Unsubscribe-Post",
                     "Value": "List-Unsubscribe=One-Click",
-                },
-            ]
+                }
+            )
 
         request: dict[str, Any] = {
             "FromEmailAddress": self._from_address,

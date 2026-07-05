@@ -19,7 +19,7 @@ from relay.ingest.ses_events import (
     process_sns_envelope,
     verify_sns_signature,
 )
-from tests.conftest import walk_to_sent
+from tests.conftest import walk_to_closed, walk_to_sent
 
 pytestmark = pytest.mark.exit_gate
 
@@ -298,3 +298,71 @@ def test_sqs_poller_processes_and_deletes(tenant_a, factory_a, monkeypatch):
     with tenant_session(tenant_id) as session:
         lead = session.get(Lead, lead_id)
         assert lead is not None and lead.state == "bounce_received"
+
+
+# ── Cert-host pinning (the SNS auth-bypass fix) ────────────────────────────
+
+
+def test_cert_host_must_be_the_sns_service_host():
+    """A bare .endswith('.amazonaws.com') accepted attacker-controlled AWS
+    endpoints (S3, API Gateway) where anyone can host a self-signed cert.
+    Only sns.<region>.amazonaws.com is trusted now."""
+    pem, sign = _make_cert_and_signer()
+    for bad_host in (
+        "https://attacker-bucket.s3.us-east-1.amazonaws.com/cert.pem",
+        "https://foo.execute-api.us-east-1.amazonaws.com/cert.pem",
+        "https://sns.eu-central-1.amazonaws.com.evil.com/cert.pem",
+        "http://sns.eu-central-1.amazonaws.com/cert.pem",  # not https
+    ):
+        env = _signed_envelope(sign, "hello")
+        env["SigningCertURL"] = bad_host
+        with pytest.raises(EventRejected, match="untrusted SigningCertURL"):
+            verify_sns_signature(env, cert_fetcher=lambda url: pem)
+
+
+def test_default_confirm_rejects_non_sns_host():
+    from relay.ingest.ses_events import _default_confirm
+
+    with pytest.raises(EventRejected, match="untrusted SubscribeURL"):
+        _default_confirm("https://attacker.s3.amazonaws.com/confirm")
+
+
+# ── Bounce suppression is decoupled from the 'sent' transition ─────────────
+
+
+def test_hard_bounce_suppresses_even_when_lead_not_in_sent(tenant_a, factory_a):
+    """A hard bounce for a lead that already moved past 'sent' (or a replay)
+    must STILL suppress — a dead address is a do-not-contact signal
+    regardless of pipeline state, unlike the transition which needs 'sent'."""
+    tenant_id, _ = tenant_a
+    email = f"late-bounce-{uuid.uuid4().hex[:6]}@example.test"
+    lead_id = factory_a.lead(email=email)
+    walk_to_closed(tenant_id, lead_id)  # lead is now 'closed', not 'sent'
+
+    stats = process_sns_envelope(_envelope(_bounce_event(email)), verifier=_TRUST_ALL)
+    assert stats.bounces == 1
+    with tenant_session(tenant_id) as session:
+        lead = session.get(Lead, lead_id)
+        assert lead is not None and lead.state == "closed"  # not transitioned
+        entry = session.execute(
+            select(Suppression).where(
+                Suppression.email_hash == hash_email(email),
+                Suppression.reason == "hard_bounce",
+            )
+        ).scalar_one()  # but suppressed anyway
+        assert entry.source == "provider_webhook"
+
+    # Idempotent: a replay writes no second entry.
+    process_sns_envelope(_envelope(_bounce_event(email)), verifier=_TRUST_ALL)
+    with tenant_session(tenant_id) as session:
+        entries = (
+            session.execute(
+                select(Suppression).where(
+                    Suppression.email_hash == hash_email(email),
+                    Suppression.reason == "hard_bounce",
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(entries) == 1

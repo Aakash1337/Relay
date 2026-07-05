@@ -4,7 +4,7 @@ configuration decides, misconfiguration fails loudly, no silent swap."""
 from __future__ import annotations
 
 from relay.config import get_settings
-from relay.crm.base import CRMAdapter
+from relay.crm.base import CRMAdapter, CRMConfigError
 from relay.logs import get_logger
 
 log = get_logger(__name__)
@@ -24,10 +24,15 @@ def crm_adapter() -> CRMAdapter | None:
             from relay.crm.memory import InMemoryCRM
 
             _cached = InMemoryCRM()
-        else:  # "espo" — the Literal type admits nothing else
+        elif kind == "espo":
             from relay.crm.espo import EspoCRM
 
             _cached = EspoCRM()
+        else:
+            # Fail loudly if the config Literal was extended but this
+            # registry was not taught the new adapter — never silently
+            # fall through to some other CRM.
+            raise CRMConfigError(f"unhandled crm backend {kind!r}")
         _cached_kind = kind
         log.info("crm adapter ready", backend=kind)
     return _cached

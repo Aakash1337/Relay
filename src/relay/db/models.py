@@ -158,7 +158,10 @@ class Campaign(Base):
         ForeignKey("tenants.id"), nullable=False
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
-    # dry_run is first-class and immutable (trigger); safe default: true.
+    # dry_run is first-class; safe default: true. Immutable in practice
+    # because the app role has no UPDATE grant on campaigns (004_rls.sql) —
+    # unlike leads.dry_run, there is no trigger enforcing it, so if an
+    # UPDATE grant is ever added, add a trigger guard alongside it.
     dry_run: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true")
     )
@@ -764,15 +767,9 @@ class PipelineRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column()
 
 
-#: Tables that carry tenant_id and get RLS + tenant-immutability triggers.
-TENANT_TABLES: tuple[str, ...] = (
-    "lead_source_register",
-    "campaigns",
-    "leads",
-    "lead_transitions",
-    "suppression",
-    "outreach_drafts",
-    "send_jobs",
-    "audit_log",
-    "pipeline_runs",
-)
+# NOTE: the authoritative list of tenant-scoped tables (for RLS + the
+# tenant-immutability triggers) is maintained directly in
+# db/sql/004_rls.sql and db/sql/003_triggers.sql. A duplicate Python
+# tuple used to live here but drifted out of sync and was wired to
+# nothing, so it was removed rather than left as a stale trap. When a new
+# tenant-scoped table is added, update those two SQL files.

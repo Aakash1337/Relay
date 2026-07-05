@@ -22,7 +22,11 @@ from relay.senders.base import (
     RealSendUnavailable,
     Sender,
 )
-from relay.senders.registry import reset_senders, sender_for_mode
+from relay.senders.registry import (
+    real_sender_status,
+    reset_senders,
+    sender_for_mode,
+)
 from relay.senders.simulated import SimulatedSender
 
 __all__ = [
@@ -31,6 +35,7 @@ __all__ = [
     "RealSendUnavailable",
     "Sender",
     "SimulatedSender",
+    "real_sender_status",
     "reset_senders",
     "sender_for_mode",
 ]

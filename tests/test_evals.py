@@ -83,3 +83,19 @@ def test_report_localizes_the_failure_category():
     assert passed < total
     passed, total = by_cat["copy"]
     assert passed == total
+
+
+def test_compliance_critical_floor_gates_independently_of_average():
+    """A single opt-out mis-triage must fail the report even when the flat
+    average still clears the threshold — otherwise a real compliance
+    regression ships green as the golden set grows."""
+    from relay.evals.harness import EvalReport, EvalResult
+
+    results = [EvalResult(f"ok{i}", "copy", True, "ok") for i in range(9)]
+    results.append(
+        EvalResult("optout-x", "triage_optout", False, "mis-triaged opt-out")
+    )
+    report = EvalReport(backend="t", model="t", results=tuple(results), threshold=0.9)
+    assert report.pass_rate == 0.9  # the average alone would pass
+    assert not report.passed  # but the compliance floor fails it
+    assert report.compliance_critical_failures

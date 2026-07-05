@@ -33,6 +33,7 @@ from relay.domain.vocab import (
     LawfulBasis,
 )
 from relay.logs import get_logger
+from relay.senders import real_sender_status
 
 log = get_logger(__name__)
 
@@ -100,21 +101,27 @@ def evaluate(
         lead.email_verified,
         "verified" if lead.email_verified else "email not verified",
     )
+    # NOTE: SIMULATED_SAFE_BASES == every valid basis today, so this check
+    # cannot fail for a DB-valid basis — it is a placeholder for the
+    # region-specific lawful-basis rules that the Legal/Data Preflight will
+    # populate (region_assumption is stored on every lead for exactly that
+    # future use, but no gate reads it yet). Kept as a named seam.
     check(
         "lawful_send_basis",
         lead.lawful_basis in SIMULATED_SAFE_BASES,
         f"lawful_basis={lead.lawful_basis}, region={lead.region_assumption} "
-        "(region-specific rules land with the Legal/Data Preflight, "
-        "Phase 1B)",
+        "(region-specific rules are a future Legal/Data Preflight item)",
     )
-    # Phase 1B invariant: real-person leads are draft-only. The send path
-    # (even a simulated one) opens for them in Phase 1C behind its own
-    # gates. Re-checked structurally by fn_send_jobs_guard.
+    # Phase 1B invariant: the four real-DATA bases are draft-only in every
+    # mode. Phase 1C opened real sends ONLY for test_consent (a
+    # compliance-free basis, our own inboxes) — the real-data bases remain
+    # fully blocked here and in fn_send_jobs_guard. Real-prospect sending
+    # is gated behind the §6 production-provider revisit criteria.
     real_person = LawfulBasis(lead.lawful_basis) in REAL_DATA_BASES
     check(
         "send_path_open_for_basis",
         not real_person,
-        "Phase 1B: real-data leads stop at draft; sending opens in 1C"
+        "real-data leads stop at draft (sending gated to §6 production work)"
         if real_person
         else "compliance-free basis",
     )
@@ -167,13 +174,17 @@ def evaluate(
             f"1C pilot sends only to test_consent inboxes "
             f"(lawful_basis={lead.lawful_basis})",
         )
+        # Provider-neutral: is a real sender actually configured and
+        # constructible (provider set + its required settings present)?
+        # Reads no provider-specific setting, so swapping SES for another
+        # direct provider never touches this gate.
+        sender_ok, sender_reason = real_sender_status()
+        check("sender_configured", sender_ok, sender_reason)
+        # The human attests remain separate from "is it wired up".
         check(
             "sender_identity_approved",
-            settings.sender_provider != "none"
-            and bool(settings.ses_from_address)
-            and settings.sender_identity_approved,
-            "requires RELAY_SENDER_PROVIDER, RELAY_SES_FROM_ADDRESS and "
-            "the RELAY_SENDER_IDENTITY_APPROVED attest",
+            settings.sender_identity_approved,
+            "RELAY_SENDER_IDENTITY_APPROVED attest missing",
         )
         check(
             "domain_authenticated",

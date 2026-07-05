@@ -53,8 +53,12 @@ class Settings(BaseSettings):
     aws_region: str = ""
     ses_from_address: str = ""
     ses_configuration_set: str = ""
-    #: List-Unsubscribe target; required for real-mode eligibility.
+    #: List-Unsubscribe mailto target; required for real-mode eligibility.
     unsubscribe_mailto: str = ""
+    #: Optional https one-click unsubscribe endpoint (RFC 8058). Only when
+    #: this is set does the sender advertise List-Unsubscribe-Post:
+    #: One-Click — mailto alone cannot honor a one-click POST.
+    unsubscribe_url: str = ""
     # Operator attestations for the real-mode eligibility checks. Each one
     # is a recorded human claim ("I verified this"), not a guess by code.
     sender_identity_approved: bool = False

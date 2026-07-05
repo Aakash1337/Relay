@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -99,6 +100,21 @@ def _default_cert_fetcher(url: str) -> bytes:
     return httpx.get(url, timeout=10.0).content
 
 
+#: SNS signing certs and confirmation URLs live ONLY on the SNS service
+#: host: sns.<region>.amazonaws.com. A bare ``.endswith(".amazonaws.com")``
+#: also accepts attacker-controlled AWS endpoints (an S3 bucket, an API
+#: Gateway stage, …) where anyone can host a self-signed cert — which,
+#: with no chain validation, fully bypasses envelope authentication. Pin
+#: the exact service host instead.
+_SNS_HOST_RE = re.compile(r"^sns\.[a-z0-9-]+\.amazonaws\.com$")
+
+
+def _require_sns_host(url: str, *, what: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not _SNS_HOST_RE.fullmatch(parsed.hostname or ""):
+        raise EventRejected(f"untrusted {what} host: {url[:100]}")
+
+
 def verify_sns_signature(
     envelope: dict,
     *,
@@ -115,11 +131,7 @@ def verify_sns_signature(
     from cryptography.x509 import load_pem_x509_certificate
 
     cert_url = envelope.get("SigningCertURL", "")
-    parsed = urlparse(cert_url)
-    if parsed.scheme != "https" or not (parsed.hostname or "").endswith(
-        ".amazonaws.com"
-    ):
-        raise EventRejected(f"untrusted SigningCertURL host: {cert_url[:100]}")
+    _require_sns_host(cert_url, what="SigningCertURL")
 
     msg_type = envelope.get("Type", "")
     fields = _SIGNED_FIELDS.get(msg_type)
@@ -190,11 +202,10 @@ def process_sns_envelope(
 
 
 def _default_confirm(url: str) -> None:
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or not (parsed.hostname or "").endswith(
-        ".amazonaws.com"
-    ):
-        raise EventRejected("untrusted SubscribeURL host")
+    # Same pinning as the cert URL: confirming a subscription is a GET to
+    # an attacker-influenced URL, so it must be the real SNS host or the
+    # confirmation becomes a constrained SSRF.
+    _require_sns_host(url, what="SubscribeURL")
     httpx.get(url, timeout=10.0)
 
 
@@ -247,7 +258,7 @@ def _process_ses_event(event: dict, stats: IngestStats) -> None:
         for tenant_id in tenants:
             stats.tenants.add(str(tenant_id))
             if kind == "Bounce":
-                _handle_bounce(tenant_id, event, recipient_hash, stats)
+                _handle_bounce(tenant_id, event, address, recipient_hash, stats)
             elif kind == "Complaint":
                 _handle_complaint(tenant_id, address, recipient_hash, domain, stats)
             elif kind == "Delivery":
@@ -257,7 +268,11 @@ def _process_ses_event(event: dict, stats: IngestStats) -> None:
 
 
 def _handle_bounce(
-    tenant_id: uuid.UUID, event: dict, recipient_hash: str, stats: IngestStats
+    tenant_id: uuid.UUID,
+    event: dict,
+    address: str,
+    recipient_hash: str,
+    stats: IngestStats,
 ) -> None:
     bounce_type = (event.get("bounce") or {}).get("bounceType", "")
     if bounce_type != "Permanent":
@@ -279,20 +294,45 @@ def _handle_bounce(
             .scalars()
             .first()
         )
-        if lead is None:
-            # Replay, or the lead already moved on: nothing to do —
-            # idempotence by state, not by bookkeeping.
-            stats.ignored += 1
-            return
-        # fn_auto_suppress writes the hard-bounce suppression entry in
-        # this same transaction — one signal, one transition, one entry.
-        transition(
-            session,
-            lead,
-            LeadState.BOUNCE_RECEIVED,
-            actor=ACTOR,
-            reason="provider hard bounce (SES)",
-        )
+        if lead is not None:
+            # fn_auto_suppress writes the hard-bounce suppression entry in
+            # this same transaction as the transition — one signal, one
+            # transition, one entry.
+            transition(
+                session,
+                lead,
+                LeadState.BOUNCE_RECEIVED,
+                actor=ACTOR,
+                reason="provider hard bounce (SES)",
+            )
+        else:
+            # No lead is in 'sent' to transition (it already moved on, a
+            # replay, or the address is only known from an earlier send).
+            # A hard bounce is still a definitive dead-address signal that
+            # MUST suppress — decoupled from the transition so it can never
+            # be dropped. Idempotent: skip if already hard-bounce-suppressed.
+            existing = (
+                session.execute(
+                    select(Suppression).where(
+                        Suppression.email_hash == recipient_hash,
+                        Suppression.reason == "hard_bounce",
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if existing is not None:
+                stats.ignored += 1
+                return
+            add_suppression(
+                session,
+                tenant_id=tenant_id,
+                reason="hard_bounce",
+                source="provider_webhook",
+                created_by=ACTOR,
+                email=address,
+                scope="tenant",
+            )
     stats.bounces += 1
 
 

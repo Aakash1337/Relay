@@ -27,6 +27,7 @@ pytestmark = pytest.mark.exit_gate
 _PILOT_ENV = {
     "RELAY_REAL_SEND_ENABLED": "true",
     "RELAY_SENDER_PROVIDER": "ses",
+    "RELAY_AWS_REGION": "eu-central-1",
     "RELAY_SES_FROM_ADDRESS": "pilot@testings.work",
     "RELAY_SENDER_IDENTITY_APPROVED": "true",
     "RELAY_SENDER_DOMAIN_AUTHENTICATED": "true",
@@ -129,7 +130,30 @@ def test_real_pilot_send_goes_through_ses(tenant_a, factory_a, pilot_env):
         h["Name"] == "List-Unsubscribe" and "unsubscribe@testings.work" in h["Value"]
         for h in headers
     )
-    assert any(h["Name"] == "List-Unsubscribe-Post" for h in headers)
+    # Mailto-only config: One-Click must NOT be advertised (RFC 8058 needs
+    # an https endpoint; a mailto cannot honor a one-click POST).
+    assert not any(h["Name"] == "List-Unsubscribe-Post" for h in headers)
+
+
+def test_one_click_only_with_https_url(tenant_a, factory_a, pilot_env, monkeypatch):
+    tenant_id, _ = tenant_a
+    monkeypatch.setenv("RELAY_UNSUBSCRIBE_URL", "https://relay.example/u/abc")
+    get_settings.cache_clear()
+    reset_senders()
+    from relay.senders.ses import SESSender
+
+    _sender_cache["ses"] = SESSender(client=pilot_env)
+    lead_id = _pilot_lead(factory_a)
+    _walk_to_queue(tenant_id, lead_id)
+    process_pending()
+    headers = pilot_env.requests[0]["Content"]["Simple"]["Headers"]
+    lu = next(h["Value"] for h in headers if h["Name"] == "List-Unsubscribe")
+    assert "https://relay.example/u/abc" in lu and "mailto:" in lu
+    assert any(
+        h["Name"] == "List-Unsubscribe-Post"
+        and h["Value"] == "List-Unsubscribe=One-Click"
+        for h in headers
+    )
 
 
 @pytest.mark.parametrize(
@@ -140,6 +164,9 @@ def test_real_pilot_send_goes_through_ses(tenant_a, factory_a, pilot_env):
         ("RELAY_SENDER_DOMAIN_AUTHENTICATED", "domain_authenticated"),
         ("RELAY_UNSUBSCRIBE_MAILTO", "unsubscribe_mechanism_present"),
         ("RELAY_PROVIDER_TERMS_RECORD", "provider_terms_allow"),
+        # Provider-neutral readiness: a half-configured SES (no region)
+        # must be caught at the gate, not stranded in error_terminal later.
+        ("RELAY_AWS_REGION", "sender_configured"),
     ],
 )
 def test_each_missing_attest_blocks_the_send(
@@ -148,7 +175,7 @@ def test_each_missing_attest_blocks_the_send(
     """The real-mode checklist is a conjunction: remove any single attest
     and the lead lands in send_blocked naming that exact check."""
     tenant_id, _ = tenant_a
-    off = "" if missing.endswith(("MAILTO", "RECORD")) else "false"
+    off = "" if missing.endswith(("MAILTO", "RECORD", "REGION")) else "false"
     monkeypatch.setenv(missing, off)
     get_settings.cache_clear()
 
@@ -294,3 +321,27 @@ def test_bounce_complaint_threshold_pauses_sending(
             )
         ).scalar_one()
         assert "campaign_below_thresholds" in (reason or "")
+
+
+def test_provider_exception_marks_job_failed_never_sent(tenant_a, factory_a, pilot_env):
+    """The live-path failure mode the fake client hides: when the provider
+    raises mid-send, the worker must fail the job and park the lead in
+    error_terminal — NEVER mark it sent. Drives the real except-handler in
+    process_pending, not _mark_failed directly."""
+    tenant_id, _ = tenant_a
+    lead_id = _pilot_lead(factory_a)
+    _walk_to_queue(tenant_id, lead_id)
+
+    def boom(**kwargs):
+        raise RuntimeError("SES Throttling: rate exceeded")
+
+    pilot_env.send_email = boom  # the real boto3 client raises ClientError
+    stats = process_pending()
+
+    assert stats.sent == 0 and stats.failed == 1
+    with tenant_session(tenant_id) as session:
+        job = session.execute(select(SendJob)).scalar_one()
+        lead = session.get(Lead, lead_id)
+        assert job.status == "failed"  # not 'sent'
+        assert job.provider_message_id is None
+        assert lead is not None and lead.state == "error_terminal"
