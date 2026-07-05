@@ -52,8 +52,8 @@ deliverable**, and records the deliberately parked decisions.
    safe direction) but creating one is **admin-only** — RLS rejects
    `scope='global'` from the application role; the platform path is
    `POST /internal/suppression/global`.
-3. **`sequence_step == 1` hardcoded** — DEFERRED by decision, logged in
-   project documentation §17: gated on multi-step sequence feature
-   design (trigger timing, per-step approval, mid-sequence
-   cancellation). The hardcoded step is honest until that design
-   exists; generalize BEFORE any step-2 ships.
+3. **`sequence_step == 1` hardcoded** — RESOLVED (2026-07-05, second
+   decision): multi-step sequences are implemented for the prototype.
+   The idempotency check takes the step being queued; campaigns carry
+   `sequence_length`/`sequence_delay_hours`; every step passes the
+   full gauntlet including its own §10 human approval.

@@ -113,11 +113,15 @@ _PIPELINE_TRANSITIONS: dict[LeadState, frozenset[LeadState]] = {
     LeadState.SEND_QUEUED: frozenset({LeadState.SENT, LeadState.SEND_BLOCKED}),
     # sent → unsubscribed: a one-click unsubscribe (RFC 8058) arrives
     # without a reply — no triage step ever happens for it.
+    # sent → personalization_pending: the sequence advance (§17,
+    # un-deferred) — no reply after the campaign's delay, more steps
+    # remain, so the lead re-enters the drafting loop for step N+1.
     LeadState.SENT: frozenset(
         {
             LeadState.BOUNCE_RECEIVED,
             LeadState.REPLY_RECEIVED,
             LeadState.UNSUBSCRIBED,
+            LeadState.PERSONALIZATION_PENDING,
         }
     ),
     LeadState.REPLY_RECEIVED: frozenset({LeadState.TRIAGE_PENDING}),

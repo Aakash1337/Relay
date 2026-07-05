@@ -82,6 +82,7 @@ def evaluate(
     mode: str,
     exclude_send_job_id: uuid.UUID | None = None,
     at_execution: bool = False,
+    sequence_step: int = 1,
 ) -> EligibilityResult:
     """Run the full §10 checklist for one prospective send.
 
@@ -95,6 +96,11 @@ def evaluate(
     paced-out moment says nothing about whether the job may QUEUE, and a
     queue-time pacing failure would terminally block a lead over a purely
     temporal condition.
+
+    ``sequence_step`` scopes the idempotency check to the step being
+    queued/executed (§17, un-deferred): one send per (lead, step) — a
+    step-2 job must not be flagged as a duplicate of step 1, and a
+    second attempt at the SAME step must be.
     """
     checks: list[EligibilityCheck] = []
 
@@ -166,7 +172,7 @@ def evaluate(
         SendJob.tenant_id == lead.tenant_id,
         SendJob.campaign_id == lead.campaign_id,
         SendJob.lead_id == lead.id,
-        SendJob.sequence_step == 1,
+        SendJob.sequence_step == sequence_step,
         SendJob.message_version == draft.version,
     )
     if exclude_send_job_id is not None:

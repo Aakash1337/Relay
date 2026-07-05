@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -34,6 +34,7 @@ from relay.db.engine import tenant_session
 from relay.db.models import (
     Campaign,
     Lead,
+    LeadTransition,
     OutreachDraft,
     Reply,
     SendJob,
@@ -426,8 +427,23 @@ class PipelineRunner:
         # and burn the lead (sent is near-terminal).
         effective_dry_run = lead.dry_run or campaign.dry_run
         mode = "simulated" if effective_dry_run else "real"
+        # The next sequence step is one past the highest step ever queued
+        # for this lead (any status: a blocked/failed step is not reused).
+        next_step = (
+            1
+            + session.execute(
+                select(func.coalesce(func.max(SendJob.sequence_step), 0)).where(
+                    SendJob.lead_id == lead.id
+                )
+            ).scalar_one()
+        )
         result = eligibility.evaluate(
-            session, lead=lead, campaign=campaign, draft=draft, mode=mode
+            session,
+            lead=lead,
+            campaign=campaign,
+            draft=draft,
+            mode=mode,
+            sequence_step=next_step,
         )
         if not result.eligible:
             transition(
@@ -451,7 +467,7 @@ class PipelineRunner:
             reason=f"eligible ({mode})",
             run_id=self.harness.run_id,
         )
-        sequence_step = 1
+        sequence_step = next_step
         idempotency_key = build_idempotency_key(
             lead.tenant_id,
             lead.campaign_id,
@@ -495,6 +511,8 @@ class PipelineRunner:
             campaign = session.get(Campaign, lead.campaign_id)
             assert campaign is not None
             if not campaign.simulated_replies_enabled:
+                if self._advance_sequence(session, lead, campaign):
+                    return
                 # Nothing to do; a real reply would arrive via webhook later.
                 raise _NoProgress
             from relay.synthetic.generator import simulated_reply_text
@@ -531,6 +549,51 @@ class PipelineRunner:
             reason="simulated reply" if existing is None else "reply on record",
             run_id=self.harness.run_id,
         )
+
+    def _advance_sequence(
+        self, session: Session, lead: Lead, campaign: Campaign
+    ) -> bool:
+        """Queue drafting for the next sequence step (§17, un-deferred).
+
+        Fires only when more steps remain AND the campaign's no-reply
+        delay has elapsed since the last send. Cancellation is
+        structural: a reply, bounce, or unsubscribe moves the lead out
+        of 'sent', so this step can never fire for them — and step N+1
+        still passes the FULL gauntlet (its own human approval of its
+        own draft version, suppression, eligibility, caps) like any
+        first send.
+        """
+        last_step = session.execute(
+            select(func.coalesce(func.max(SendJob.sequence_step), 0)).where(
+                SendJob.lead_id == lead.id, SendJob.status == "sent"
+            )
+        ).scalar_one()
+        if last_step >= campaign.sequence_length:
+            return False
+        sent_at = session.execute(
+            select(func.max(LeadTransition.created_at)).where(
+                LeadTransition.lead_id == lead.id,
+                LeadTransition.to_state == str(LeadState.SENT),
+            )
+        ).scalar_one()
+        if sent_at is None:
+            return False
+        elapsed = datetime.now(tz=UTC) - sent_at
+        if elapsed < timedelta(hours=campaign.sequence_delay_hours):
+            return False
+        transition(
+            session,
+            lead,
+            LeadState.PERSONALIZATION_PENDING,
+            actor=ACTOR,
+            reason=(
+                f"sequence advance: drafting step {last_step + 1} of "
+                f"{campaign.sequence_length} (no reply after "
+                f"{campaign.sequence_delay_hours}h)"
+            ),
+            run_id=self.harness.run_id,
+        )
+        return True
 
     def _step_queue_triage(self, session: Session, lead: Lead) -> None:
         self.harness.tick("queue_triage")

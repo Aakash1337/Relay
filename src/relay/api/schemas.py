@@ -117,6 +117,10 @@ class CampaignCreateRequest(BaseModel):
     simulated_replies_enabled: bool = False
     mailbox_id: str | None = None
     daily_volume_cap: int | None = Field(default=None, ge=1)
+    #: Multi-step sequences: total steps (1 = single-shot) and the
+    #: no-reply delay before the next step may draft.
+    sequence_length: int = Field(default=1, ge=1, le=10)
+    sequence_delay_hours: int = Field(default=72, ge=0)
 
 
 class CampaignResponse(BaseModel):

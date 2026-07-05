@@ -38,3 +38,25 @@ ALTER TABLE pipeline_runs DROP CONSTRAINT IF EXISTS ck_runs_status;
 ALTER TABLE pipeline_runs ADD CONSTRAINT ck_runs_status
   CHECK (status IN ('running','completed','killed_iteration_cap',
                     'killed_budget','killed_tenant_spend_cap','failed'));
+
+-- Multi-step sequences (§17, un-deferred by operator decision).
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sequence_length integer
+  NOT NULL DEFAULT 1;
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sequence_delay_hours integer
+  NOT NULL DEFAULT 72;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'ck_campaigns_sequence_length'
+  ) THEN
+    ALTER TABLE campaigns ADD CONSTRAINT ck_campaigns_sequence_length
+      CHECK (sequence_length >= 1);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'ck_campaigns_sequence_delay'
+  ) THEN
+    ALTER TABLE campaigns ADD CONSTRAINT ck_campaigns_sequence_delay
+      CHECK (sequence_delay_hours >= 0);
+  END IF;
+END
+$$;
