@@ -358,7 +358,7 @@ RELAY is a multi-container stack (workflow engine, tool servers, database, queue
 - **Local tool-calling reliability** — before trusting the local tier with tools unattended.
 - **Single-GPU concurrency ceiling** and when the hot path must move.
 - **Target cost per qualified meeting**, and the metric that kills the project.
-- **Multi-step sequences** — deferred (2026-07-05) pending feature design: step-advance triggers (delay vs. no-reply), per-step human approval (§10 approves an exact message version), and mid-sequence cancellation on reply/unsubscribe/bounce. Until that design exists the send path deliberately pins `sequence_step = 1` and the code-level idempotency check is hardcoded to step 1 (`domain/eligibility.py`); it must be generalized before any step-2 ships. The DB uniqueness constraint already includes `sequence_step` and needs no change.
+- **Multi-step sequences** — implemented (2026-07-05, same-day un-deferral by operator decision for the prototype). Design: step N+1 re-enters the existing pipeline loop (`sent → personalization_pending`) after the campaign's `sequence_delay_hours` with no reply; every step drafts its own version and needs its own human approval (§10); cancellation is structural — a reply, bounce, or unsubscribe moves the lead out of `sent`, and suppression blocks the next step at eligibility. The idempotency check is generalized to the step being queued; the DB uniqueness constraint already covered it.
 
 ---
 
