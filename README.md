@@ -169,6 +169,8 @@ scripts/          demo, seeding, evals, benchmark, local-Postgres helper
 
 ## Development
 
+![The development workflow](docs/img/dev-workflow.svg)
+
 The loop for making a change:
 
 1. Branch from `main`, one change per branch, PR back into `main`.
