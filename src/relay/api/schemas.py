@@ -127,6 +127,30 @@ class CampaignResponse(BaseModel):
     status: str
 
 
+class TenantOnboardRequest(BaseModel):
+    """Self-serve onboarding (Phase 4): one call provisions the full
+    working chain — tenant, API key, registered lead source, campaign,
+    and quotas — with nothing hand-edited."""
+
+    name: str = Field(min_length=1, max_length=200)
+    source: SourceCreateRequest
+    campaign: CampaignCreateRequest
+    #: Per-tenant quotas; omit to fall back to global config.
+    daily_send_cap: int | None = Field(default=None, ge=0)
+    monthly_spend_cap_units: float | None = Field(default=None, ge=0)
+
+
+class TenantOnboardResponse(BaseModel):
+    tenant_id: uuid.UUID
+    name: str
+    #: Shown exactly once; only the hash is stored.
+    api_key: str
+    source_id: uuid.UUID
+    campaign_id: uuid.UUID
+    daily_send_cap: int | None
+    monthly_spend_cap_units: float | None
+
+
 # ── Leads ───────────────────────────────────────────────────────────────────
 
 
@@ -348,6 +372,21 @@ class EconomicsResponse(BaseModel):
     cost_units_per_meeting: float | None
     #: Omitted (None) unless RELAY_COST_UNIT_USD is calibrated.
     cost_usd_per_meeting: float | None
+
+
+class TenantEconomicsResponse(BaseModel):
+    """Phase 4 cost attribution: one tenant's cross-campaign funnel,
+    spend, cost per booked meeting, and headroom under its monthly cap."""
+
+    tenant_id: uuid.UUID
+    funnel: dict[str, int]
+    cost_units_total: float
+    cost_units_30d: float
+    cost_units_per_meeting: float | None
+    #: Omitted (None) unless RELAY_COST_UNIT_USD is calibrated.
+    cost_usd_per_meeting: float | None
+    monthly_spend_cap_units: float | None
+    spend_cap_remaining_units: float | None
 
 
 # ── Legal/Data Preflight (Phase 1B gate; admin surface) ─────────────────────

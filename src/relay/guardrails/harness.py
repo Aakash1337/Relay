@@ -16,12 +16,13 @@ past these limits, because they are counted here, not by it.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 
 from relay.config import get_settings
 from relay.db.engine import tenant_session
-from relay.db.models import PipelineRun
+from relay.db.models import PipelineRun, Tenant
 from relay.logs import get_logger
 
 log = get_logger(__name__)
@@ -37,6 +38,10 @@ class IterationCapExceeded(GuardrailViolation):
 
 class BudgetExceeded(GuardrailViolation):
     pass
+
+
+class TenantSpendCapExceeded(GuardrailViolation):
+    """Phase 4 spend control: the tenant's rolling-30d cost ceiling."""
 
 
 class RunHarness:
@@ -79,6 +84,7 @@ class RunHarness:
         self.cost_units = 0.0
         self._pending_kill: tuple[str, str] | None = None
         self.run_id = self._create_run_row()
+        self._enforce_tenant_spend_cap()
 
     # ── Bookkeeping ─────────────────────────────────────────────────────────
 
@@ -102,6 +108,45 @@ class RunHarness:
             budget_units=self.budget_units,
         )
         return run_id
+
+    def _enforce_tenant_spend_cap(self) -> None:
+        """Phase 4 spend control: a tenant at/over its rolling-30-day cost
+        cap cannot START a new run — in-flight work finishes under its own
+        per-run budget. The refusal is a recorded, audited kill (the run
+        row exists with status 'killed_tenant_spend_cap'), not a silent
+        no-op, so an operator sees WHY nothing is progressing."""
+        with tenant_session(self.tenant_id) as session:
+            tenant = session.get(Tenant, self.tenant_id)
+            cap = None if tenant is None else tenant.monthly_spend_cap_units
+            if cap is None:
+                return
+            cap = float(cap)
+            spent = float(
+                session.execute(
+                    select(func.coalesce(func.sum(PipelineRun.cost_units), 0)).where(
+                        PipelineRun.started_at
+                        >= datetime.now(tz=UTC) - timedelta(days=30),
+                        PipelineRun.id != self.run_id,
+                    )
+                ).scalar_one()
+            )
+        if spent >= cap:
+            self._pending_kill = (
+                "killed_tenant_spend_cap",
+                f"tenant 30d spend {spent} units >= monthly cap {cap}",
+            )
+            self.finalize_kill()
+            log.error(
+                "run refused: tenant spend cap",
+                run_id=str(self.run_id),
+                spent_30d=spent,
+                cap=cap,
+            )
+            raise TenantSpendCapExceeded(
+                f"run {self.run_id}: tenant 30d spend {spent} units >= "
+                f"monthly cap {cap} — new runs refused until the window "
+                "rolls or the cap is raised"
+            )
 
     def _persist(self, status: str, detail: str | None = None) -> None:
         with tenant_session(self.tenant_id) as session:

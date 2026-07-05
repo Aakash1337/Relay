@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import distinct, func, select
 
@@ -27,6 +28,7 @@ from relay.db.models import (
     PipelineRun,
     Reply,
     SendJob,
+    Tenant,
 )
 
 
@@ -137,4 +139,108 @@ def campaign_economics(tenant_id: uuid.UUID, campaign_id: uuid.UUID) -> Economic
         cost_units_total=cost_units,
         cost_units_per_meeting=per_meeting,
         cost_usd_per_meeting=usd_per_meeting,
+    )
+
+
+# ── Phase 4: cost attribution per TENANT (client profitability view) ────────
+
+
+@dataclass(frozen=True)
+class TenantEconomicsReport:
+    tenant_id: uuid.UUID
+    leads_total: int
+    leads_qualified: int
+    sends_completed: int
+    replies_received: int
+    interested: int
+    meetings_booked: int
+    cost_units_total: float
+    #: Rolling-30-day spend — the number the monthly cap governs.
+    cost_units_30d: float
+    cost_units_per_meeting: float | None
+    cost_usd_per_meeting: float | None
+    monthly_spend_cap_units: float | None
+
+    @property
+    def spend_cap_remaining_units(self) -> float | None:
+        if self.monthly_spend_cap_units is None:
+            return None
+        return max(0.0, self.monthly_spend_cap_units - self.cost_units_30d)
+
+    @property
+    def funnel(self) -> dict[str, int]:
+        return {
+            "leads": self.leads_total,
+            "qualified": self.leads_qualified,
+            "sent": self.sends_completed,
+            "replied": self.replies_received,
+            "interested": self.interested,
+            "booked": self.meetings_booked,
+        }
+
+
+def _count_reached_tenant(session, state: str) -> int:
+    """Leads of this tenant (RLS-scoped session) that ever reached
+    ``state``, whatever happened to them afterwards."""
+    return session.execute(
+        select(func.count(distinct(LeadTransition.lead_id))).where(
+            LeadTransition.to_state == state
+        )
+    ).scalar_one()
+
+
+def tenant_economics(tenant_id: uuid.UUID) -> TenantEconomicsReport:
+    """Cross-campaign cost attribution for one tenant — cost per booked
+    meeting and spend against the tenant's monthly cap, derived from rows
+    the pipeline already writes."""
+    settings = get_settings()
+    cutoff = datetime.now(tz=UTC) - timedelta(days=30)
+    with tenant_session(tenant_id) as session:
+        leads_total = session.execute(
+            select(func.count()).select_from(Lead)
+        ).scalar_one()
+        qualified = _count_reached_tenant(session, "scored_qualified")
+        interested = _count_reached_tenant(session, "interested")
+        booked = _count_reached_tenant(session, "booked")
+        sends = session.execute(
+            select(func.count()).where(SendJob.status == "sent")
+        ).scalar_one()
+        replies = session.execute(select(func.count()).select_from(Reply)).scalar_one()
+        cost_total = float(
+            session.execute(
+                select(func.coalesce(func.sum(PipelineRun.cost_units), 0))
+            ).scalar_one()
+        )
+        cost_30d = float(
+            session.execute(
+                select(func.coalesce(func.sum(PipelineRun.cost_units), 0)).where(
+                    PipelineRun.started_at >= cutoff
+                )
+            ).scalar_one()
+        )
+        tenant = session.get(Tenant, tenant_id)
+        cap = (
+            float(tenant.monthly_spend_cap_units)
+            if tenant is not None and tenant.monthly_spend_cap_units is not None
+            else None
+        )
+
+    per_meeting = (cost_total / booked) if booked else None
+    usd_rate = settings.cost_unit_usd
+    usd_per_meeting = (
+        per_meeting * usd_rate if (per_meeting is not None and usd_rate > 0) else None
+    )
+    return TenantEconomicsReport(
+        tenant_id=tenant_id,
+        leads_total=leads_total,
+        leads_qualified=qualified,
+        sends_completed=sends,
+        replies_received=replies,
+        interested=interested,
+        meetings_booked=booked,
+        cost_units_total=cost_total,
+        cost_units_30d=cost_30d,
+        cost_units_per_meeting=per_meeting,
+        cost_usd_per_meeting=usd_per_meeting,
+        monthly_spend_cap_units=cap,
     )

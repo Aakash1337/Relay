@@ -681,3 +681,36 @@ def test_warmup_ramp_caps_a_young_identity(tenant_a, factory_a, pilot_env, monke
     third = _pilot_lead(factory_a)
     _walk_to_queue(tenant_id, third)
     assert process_pending().sent == 1
+
+
+def test_tenant_daily_cap_override_binds_below_config(tenant_a, factory_a, pilot_env):
+    """Phase 4 quota: a tenant's daily_send_cap overrides the global
+    RELAY_REAL_SEND_DAILY_CAP (5 in this env) when lower."""
+    from relay.db.engine import admin_session
+    from relay.db.models import Tenant
+
+    tenant_id, _ = tenant_a
+    with admin_session() as session:
+        session.get(Tenant, tenant_id).daily_send_cap = 1
+
+    first = _pilot_lead(factory_a)
+    _walk_to_queue(tenant_id, first)
+    assert process_pending().sent == 1
+
+    second = _pilot_lead(factory_a)
+    run_to_approval(tenant_id, second)
+    approve_current_draft(tenant_id, second)
+    from relay.pipeline.runner import PipelineRunner
+
+    outcome = PipelineRunner(tenant_id, lead_id=second).run()
+    assert outcome.final_state == "send_blocked"
+    with tenant_session(tenant_id) as session:
+        from relay.db.models import LeadTransition
+
+        reason = session.execute(
+            select(LeadTransition.reason).where(
+                LeadTransition.lead_id == second,
+                LeadTransition.to_state == "send_blocked",
+            )
+        ).scalar_one()
+        assert "cap 1 (tenant quota)" in (reason or "")
