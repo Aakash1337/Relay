@@ -152,7 +152,17 @@ class TenantOnboardResponse(BaseModel):
     campaign_id: uuid.UUID
     daily_send_cap: int | None
     monthly_spend_cap_units: float | None
-    sender_from_address: str | None = None
+    sender_from_address: str | None
+    #: Always false at onboarding: the identity must be attested verified
+    #: (POST /internal/tenants/{id}/attest-sender-identity) before real
+    #: sends under it are eligible.
+    sender_identity_verified: bool = False
+
+
+class TenantSenderAttestResponse(BaseModel):
+    id: uuid.UUID
+    sender_from_address: str
+    sender_identity_verified: bool
 
 
 # ── Leads ───────────────────────────────────────────────────────────────────

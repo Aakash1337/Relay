@@ -728,7 +728,9 @@ def test_tenant_sender_identity_overrides_global_from(
     ta, _ = tenant_a
     tb, _ = tenant_b
     with admin_session() as session:
-        session.get(Tenant, ta).sender_from_address = "team-a@testings.work"
+        tenant = session.get(Tenant, ta)
+        tenant.sender_from_address = "team-a@testings.work"
+        tenant.sender_identity_verified = True  # operator attest
 
     lead_a = _pilot_lead(factory_a)
     _walk_to_queue(ta, lead_a)
@@ -738,3 +740,39 @@ def test_tenant_sender_identity_overrides_global_from(
 
     froms = {r["FromEmailAddress"] for r in pilot_env.requests}
     assert froms == {"team-a@testings.work", "pilot@testings.work"}
+
+
+def test_unverified_tenant_identity_blocks_before_the_provider(
+    tenant_a, factory_a, pilot_env
+):
+    """A tenant whose own from-address is NOT attested provider-verified
+    is blocked at eligibility — the provider never sees the unverified
+    From, so no lead can land in terminal failure over an onboarding
+    typo."""
+    from relay.db.engine import admin_session
+    from relay.db.models import Tenant
+
+    tenant_id, _ = tenant_a
+    with admin_session() as session:
+        session.get(
+            Tenant, tenant_id
+        ).sender_from_address = "not-verified@testings.work"
+
+    lead_id = _pilot_lead(factory_a)
+    run_to_approval(tenant_id, lead_id)
+    approve_current_draft(tenant_id, lead_id)
+    from relay.pipeline.runner import PipelineRunner
+
+    outcome = PipelineRunner(tenant_id, lead_id=lead_id).run()
+    assert outcome.final_state == "send_blocked"
+    assert pilot_env.requests == []
+    with tenant_session(tenant_id) as session:
+        from relay.db.models import LeadTransition
+
+        reason = session.execute(
+            select(LeadTransition.reason).where(
+                LeadTransition.lead_id == lead_id,
+                LeadTransition.to_state == "send_blocked",
+            )
+        ).scalar_one()
+        assert "tenant_sender_identity_verified" in (reason or "")
