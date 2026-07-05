@@ -4,9 +4,13 @@ The authoritative check lives in the database (``fn_is_suppressed``,
 called by triggers on every send-relevant write); this module is the
 Python-side interface to the same function plus entry management.
 
-Open scope decision (documented in the spec, defaulted here): suppression
-defaults to per-tenant scope; the 'global' scope is honored across
-tenants when present, because over-suppression is the safe direction.
+Scope decision (§17, decided): suppression defaults to per-tenant scope;
+the 'global' scope is honored across tenants when present, because
+over-suppression is the safe direction — but creating a global entry is
+a PLATFORM (admin) action only. RLS blocks the application role from
+inserting scope='global' (a tenant must not be able to silently veto
+every other tenant's sending); use the admin endpoint
+``POST /internal/suppression/global``.
 """
 
 from __future__ import annotations

@@ -191,6 +191,15 @@ class Settings(BaseSettings):
     #: delivered mail) keep verifying. New signatures always use master_key.
     #: Clear it once the rotation window closes.
     master_key_previous: SecretStr | None = None
+    #: Pepper for email-address digests (HMAC-SHA256). A long-lived secret
+    #: managed alongside the master key (KMS in production) — but unlike
+    #: the master key it must NOT rotate casually: every stored digest
+    #: depends on it. Dev default only.
+    email_hash_pepper: SecretStr = SecretStr("dev-email-pepper-not-for-production")
+    #: Dual-lookup transition window: also match the pre-pepper unkeyed
+    #: digest on reads. Set false once no pre-pepper rows remain (e.g.
+    #: after a fresh migrate/reset) — writes are always peppered.
+    email_hash_legacy_lookup: bool = True
 
     def pilot_recipient_addresses(self) -> tuple[str, ...]:
         """The parsed pilot allowlist (comma-separated, trimmed, no blanks)."""

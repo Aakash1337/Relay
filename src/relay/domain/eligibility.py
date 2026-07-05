@@ -32,7 +32,7 @@ from relay.domain.vocab import (
     SIMULATED_SAFE_BASES,
     LawfulBasis,
 )
-from relay.hashing import hash_email
+from relay.hashing import email_hash_candidates
 from relay.logs import get_logger
 from relay.senders import real_sender_status
 
@@ -95,13 +95,18 @@ def evaluate(
         checks.append(EligibilityCheck(name, bool(passed), detail))
 
     # ── Integrity checks: apply in every mode ───────────────────────────────
-    suppressed = is_suppressed(
-        session,
-        tenant_id=lead.tenant_id,
-        email_hash=lead.email_hash,
-        domain=lead.email_domain,
-        campaign_id=lead.campaign_id,
-        mailbox_id=campaign.mailbox_id,
+    # Checked for EVERY digest the address may be stored under (pepper
+    # dual-lookup): a suppression entry written under either scheme blocks.
+    suppressed = any(
+        is_suppressed(
+            session,
+            tenant_id=lead.tenant_id,
+            email_hash=candidate,
+            domain=lead.email_domain,
+            campaign_id=lead.campaign_id,
+            mailbox_id=campaign.mailbox_id,
+        )
+        for candidate in email_hash_candidates(lead.email)
     )
     check(
         "not_suppressed",
@@ -191,7 +196,13 @@ def evaluate(
         # explicit structural gate on top of test_consent + the SES sandbox,
         # fail-closed: an empty allowlist means no real send is possible.
         # Re-checked at the last hop by the sender.
-        allowlist = {hash_email(addr) for addr in settings.pilot_recipient_addresses()}
+        # Every digest of every allowlisted address, so a lead row stored
+        # under the pre-pepper scheme still matches its own allowlist entry.
+        allowlist = {
+            candidate
+            for addr in settings.pilot_recipient_addresses()
+            for candidate in email_hash_candidates(addr)
+        }
         check(
             "recipient_on_pilot_allowlist",
             lead.email_hash in allowlist,

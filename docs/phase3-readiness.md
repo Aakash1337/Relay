@@ -40,16 +40,20 @@ deliverable**, and records the deliberately parked decisions.
 - **Human security + compliance review** — the exit gate requires it
   explicitly; an automated audit is input to it, not a substitute.
 
-## Parked decisions (deliberate, awaiting the operator)
+## Formerly parked decisions (resolved 2026-07-05)
 
-1. **Email-hash HMAC pepper** — `hash_email` is unkeyed SHA-256; a
-   DSR-erased suppression hash is theoretically reversible by guessing
-   a known address. Peppering changes every stored digest, so it needs
-   a migration plan; fold into the KMS/master-key work.
-2. **Global-scope suppression cross-tenant asymmetry** — any tenant can
-   insert a `scope='global'` row that silently blocks every other
-   tenant's sends, which those tenants can neither see nor remove.
-   Over-suppression is the safe direction, but the asymmetry needs a
-   deliberate multi-tenant decision before Phase 4.
-3. **`sequence_step == 1` hardcoded** in the idempotency/duplicate
-   check — must be generalized before multi-step sequences ship.
+1. **Email-hash HMAC pepper** — DECIDED and implemented: `hash_email`
+   is keyed under `RELAY_EMAIL_HASH_PEPPER` with a dual-lookup
+   transition window (`RELAY_EMAIL_HASH_LEGACY_LOOKUP`); the pepper is
+   managed alongside the master key (KMS in production). Full record:
+   [decisions/email-hash-pepper.md](decisions/email-hash-pepper.md).
+2. **Global-scope suppression** — DECIDED and implemented: global
+   entries remain honored across all tenants (over-suppression is the
+   safe direction) but creating one is **admin-only** — RLS rejects
+   `scope='global'` from the application role; the platform path is
+   `POST /internal/suppression/global`.
+3. **`sequence_step == 1` hardcoded** — DEFERRED by decision, logged in
+   project documentation §17: gated on multi-step sequence feature
+   design (trigger timing, per-step approval, mid-sequence
+   cancellation). The hardcoded step is honest until that design
+   exists; generalize BEFORE any step-2 ships.

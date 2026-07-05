@@ -187,8 +187,26 @@ def test_suppression_scopes(tenant_a, tenant_b, factory_a):
             domain="other-corp.test",
         )
 
-    # Global scope reaches across tenants (safe direction: over-suppress).
-    with tenant_session(tenant_id) as session:
+    # Global scope is a PLATFORM decision (§17, decided): the app role
+    # cannot create one — a tenant must not silently veto every other
+    # tenant's sending. RLS rejects the insert.
+    with pytest.raises(Exception, match="row-level security"):  # noqa: PT011, SIM117
+        with tenant_session(tenant_id) as session:
+            add_suppression(
+                session,
+                tenant_id=tenant_id,
+                scope="global",
+                email=email,
+                reason="legal_delete",
+                source="manual",
+                created_by="test",
+            )
+
+    # Created by the ADMIN path, a global entry reaches across tenants
+    # (safe direction: over-suppress).
+    from relay.db.engine import admin_session
+
+    with admin_session() as session:
         add_suppression(
             session,
             tenant_id=tenant_id,
@@ -196,7 +214,7 @@ def test_suppression_scopes(tenant_a, tenant_b, factory_a):
             email=email,
             reason="legal_delete",
             source="manual",
-            created_by="test",
+            created_by="admin",
         )
     with tenant_session(tenant_b[0]) as session:
         assert is_suppressed(
