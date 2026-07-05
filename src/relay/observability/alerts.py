@@ -19,7 +19,7 @@ from sqlalchemy import func, select
 
 from relay.config import get_settings
 from relay.db.engine import tenant_session
-from relay.db.models import PipelineRun, SendJob
+from relay.db.models import PipelineRun, SendJob, Suppression
 from relay.logs import get_logger
 
 log = get_logger(__name__)
@@ -101,6 +101,37 @@ def evaluate_alerts(tenant_id: uuid.UUID) -> list[Alert]:
                     value=float(stuck),
                 )
             )
+
+        # ── Reputation: hard-bounce rate over the last 24h ──────────────────
+        # Providers cut senders off for exactly this number; it must get
+        # loud BEFORE the eligibility threshold silently pauses sending.
+        day_cutoff = now - timedelta(hours=24)
+        sent_24h = session.execute(
+            select(func.count()).where(
+                SendJob.status == "sent", SendJob.completed_at >= day_cutoff
+            )
+        ).scalar_one()
+        if sent_24h >= settings.alert_bounce_rate_min_sends:
+            bounces_24h = session.execute(
+                select(func.count()).where(
+                    Suppression.reason == "hard_bounce",
+                    Suppression.created_at >= day_cutoff,
+                )
+            ).scalar_one()
+            rate = bounces_24h / sent_24h
+            if rate > settings.alert_bounce_rate:
+                alerts.append(
+                    Alert(
+                        rule="bounce_rate_high",
+                        severity="critical",
+                        detail=(
+                            f"{bounces_24h} hard bounces over {sent_24h} sends "
+                            f"in 24h ({rate:.1%}, threshold "
+                            f"{settings.alert_bounce_rate:.1%})"
+                        ),
+                        value=rate,
+                    )
+                )
 
     for alert in alerts:
         log.warning(

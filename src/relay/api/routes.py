@@ -83,6 +83,37 @@ def create_tenant(
     return schemas.TenantCreateResponse(id=tenant_id, name=body.name, api_key=api_key)
 
 
+@router.post(
+    "/internal/tenants/{tenant_id}/rotate-key",
+    response_model=schemas.TenantKeyRotateResponse,
+    dependencies=[Depends(require_admin)],
+)
+def rotate_tenant_key(tenant_id: uuid.UUID) -> schemas.TenantKeyRotateResponse:
+    """Rotate a tenant's API key (Phase 3: secrets rotation).
+
+    The old key stops working the moment this commits — rotation is for
+    suspected exposure, so a grace overlap would defeat the point. The
+    new key is returned exactly once; only its hash is stored.
+    """
+    api_key = f"rk_{secrets.token_urlsafe(32)}"
+    with admin_session() as session:
+        tenant = session.get(Tenant, tenant_id)
+        if tenant is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "tenant not found")
+        tenant.api_key_hash = hash_api_key(api_key)
+        audit.record(
+            session,
+            tenant_id=tenant_id,
+            actor_type="human",
+            actor_id="admin",
+            action="tenant.rotate_key",
+            entity_type="tenant",
+            entity_id=str(tenant_id),
+            payload={"note": "api key rotated; old key invalidated"},
+        )
+    return schemas.TenantKeyRotateResponse(id=tenant_id, api_key=api_key)
+
+
 # ── Lead source register ───────────────────────────────────────────────────
 
 
@@ -402,7 +433,12 @@ def reject(
 def pending_drafts(
     tenant_id: uuid.UUID = Depends(require_tenant),
 ) -> schemas.PendingDraftsResponse:
-    """The reviewer's queue: drafts waiting at the human gate."""
+    """The reviewer's queue: drafts waiting at the human gate.
+
+    Confidence-ordered (highest fit score first, FIFO within a score):
+    the top of the queue is the batchable tail, the bottom is where
+    reviewer attention belongs.
+    """
     with tenant_session(tenant_id) as session:
         rows = session.execute(
             select(OutreachDraft, Lead)
@@ -412,7 +448,7 @@ def pending_drafts(
                 & (Lead.id == OutreachDraft.lead_id),
             )
             .where(OutreachDraft.status == "pending_approval")
-            .order_by(OutreachDraft.created_at)
+            .order_by(Lead.fit_score.desc().nulls_last(), OutreachDraft.created_at)
         ).all()
         return schemas.PendingDraftsResponse(
             drafts=[
@@ -427,6 +463,9 @@ def pending_drafts(
                     lead_first_name=lead.first_name,
                     lead_company=lead.company_name,
                     lead_state=lead.state,
+                    fit_score=(
+                        float(lead.fit_score) if lead.fit_score is not None else None
+                    ),
                     created_at=draft.created_at,
                 )
                 for draft, lead in rows
@@ -474,6 +513,78 @@ def review(
             active_draft_id=outcome.active_draft_id,
             lead_state=lead.state,
         )
+
+
+@router.post(
+    "/outreach-drafts/batch-review",
+    response_model=schemas.BatchReviewResponse,
+)
+def batch_review(
+    body: schemas.BatchReviewRequest,
+    tenant_id: uuid.UUID = Depends(require_tenant),
+) -> schemas.BatchReviewResponse:
+    """Review many drafts in one call (Phase 3: human-in-the-loop at scale).
+
+    Each item is processed in ITS OWN transaction through the same rubric
+    path as the single-draft endpoint — one bad item (stale draft, wrong
+    state) fails alone and the rest of the batch still lands. Like every
+    review surface, this never sends.
+    """
+    results: list[schemas.BatchReviewResultItem] = []
+    counts = {"approved": 0, "approved_with_edits": 0, "rejected": 0}
+    failed = 0
+    for item in body.items:
+        try:
+            with tenant_session(tenant_id) as session:
+                draft = session.get(OutreachDraft, item.draft_id)
+                if draft is None:
+                    raise ApprovalError("draft not found")
+                outcome = review_draft(
+                    session,
+                    draft=draft,
+                    reviewer=body.reviewer,
+                    decision=item.decision,
+                    reasons=item.reasons,
+                    notes=item.notes,
+                    edited_subject=item.edited_subject,
+                    edited_body=item.edited_body,
+                )
+                lead = session.get(Lead, draft.lead_id)
+                results.append(
+                    schemas.BatchReviewResultItem(
+                        draft_id=item.draft_id,
+                        ok=True,
+                        decision=item.decision,
+                        active_draft_id=outcome.active_draft_id,
+                        lead_state=lead.state if lead else None,
+                    )
+                )
+                counts[str(item.decision)] += 1
+        except (ApprovalError, ValueError, TransitionError, IntegrityError) as exc:
+            failed += 1
+            results.append(
+                schemas.BatchReviewResultItem(
+                    draft_id=item.draft_id,
+                    ok=False,
+                    decision=item.decision,
+                    error=str(exc)[:500],
+                )
+            )
+    log.info(
+        "batch review processed",
+        reviewer=body.reviewer,
+        approved=counts["approved"],
+        edited=counts["approved_with_edits"],
+        rejected=counts["rejected"],
+        failed=failed,
+    )
+    return schemas.BatchReviewResponse(
+        results=results,
+        approved=counts["approved"],
+        edited=counts["approved_with_edits"],
+        rejected=counts["rejected"],
+        failed=failed,
+    )
 
 
 # ── The approval UI: a static page, credentials stay client-side ────────────
@@ -528,8 +639,13 @@ def metrics_json(
         replies_window=m.replies_window,
         sent_window=m.sent_window,
         suppression_entries=m.suppression_entries,
+        suppressions_window=m.suppressions_window,
+        reviews_window=m.reviews_window,
         run_error_rate=m.run_error_rate,
         reply_rate=m.reply_rate,
+        bounce_rate=m.bounce_rate,
+        complaint_rate=m.complaint_rate,
+        edit_rate=m.edit_rate,
     )
 
 

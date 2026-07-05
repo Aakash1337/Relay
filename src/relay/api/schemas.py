@@ -51,6 +51,13 @@ class TenantCreateResponse(BaseModel):
     api_key: str
 
 
+class TenantKeyRotateResponse(BaseModel):
+    id: uuid.UUID
+    #: The NEW key, shown exactly once; the old key stops working
+    #: immediately (only the new hash is stored).
+    api_key: str
+
+
 # ── Lead source register (§7) ───────────────────────────────────────────────
 
 
@@ -264,11 +271,52 @@ class PendingDraftItem(BaseModel):
     lead_first_name: str | None
     lead_company: str | None
     lead_state: str
+    #: The scoring confidence for this lead — the queue is ordered by it
+    #: (highest first) so reviewers can batch the confident tail and
+    #: spend their attention on the uncertain one.
+    fit_score: float | None = None
     created_at: datetime
 
 
 class PendingDraftsResponse(BaseModel):
     drafts: list[PendingDraftItem]
+
+
+# ── Batched review (Phase 3 human-in-the-loop at scale) ─────────────────────
+
+
+class BatchReviewItem(BaseModel):
+    draft_id: uuid.UUID
+    decision: ReviewDecision
+    reasons: list[ReviewReason] = Field(default_factory=list)
+    notes: str | None = Field(default=None, max_length=2000)
+    edited_subject: str | None = Field(default=None, max_length=200)
+    edited_body: str | None = Field(default=None, max_length=5000)
+
+
+class BatchReviewRequest(BaseModel):
+    reviewer: str = Field(min_length=1, max_length=200)
+    items: list[BatchReviewItem] = Field(min_length=1, max_length=100)
+
+
+class BatchReviewResultItem(BaseModel):
+    draft_id: uuid.UUID
+    ok: bool
+    decision: ReviewDecision
+    #: The approved draft after this item (None unless approved).
+    active_draft_id: uuid.UUID | None = None
+    lead_state: str | None = None
+    error: str | None = None
+
+
+class BatchReviewResponse(BaseModel):
+    results: list[BatchReviewResultItem]
+    approved: int
+    edited: int
+    rejected: int
+    failed: int
+    #: Always false: review/approval never sends (§10).
+    sent: Literal[False] = False
 
 
 # ── Economics (Phase 1A gate) ───────────────────────────────────────────────
@@ -342,8 +390,15 @@ class MetricsResponse(BaseModel):
     replies_window: int
     sent_window: int
     suppression_entries: int
+    #: New suppression entries in the window per reason (reputation signal).
+    suppressions_window: dict[str, int] = {}
+    #: Rubric reviews in the window per decision (edits-as-signal).
+    reviews_window: dict[str, int] = {}
     run_error_rate: float | None
     reply_rate: float | None
+    bounce_rate: float | None = None
+    complaint_rate: float | None = None
+    edit_rate: float | None = None
 
 
 class AlertItem(BaseModel):

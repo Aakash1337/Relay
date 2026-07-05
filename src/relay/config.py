@@ -97,6 +97,11 @@ class Settings(BaseSettings):
     #: start=0 disables the ramp entirely.
     warmup_daily_start: int = Field(default=0, ge=0)
     warmup_daily_increment: int = Field(default=0, ge=0)
+    #: Reputation alert: fire when the 24h hard-bounce rate exceeds this
+    #: fraction — but only once at least min_sends went out (1/1 is not a
+    #: reputation signal, it is noise).
+    alert_bounce_rate: float = Field(default=0.05, ge=0)
+    alert_bounce_rate_min_sends: int = Field(default=5, ge=1)
     # SNS event ingestion (webhook token and/or SQS polling).
     ses_webhook_token: SecretStr | None = None
     sqs_queue_url: str = ""
@@ -181,6 +186,11 @@ class Settings(BaseSettings):
     # ── Tenancy primitives ──────────────────────────────────────────────────
     # Dev default only; production uses a KMS-managed key (Phase 3).
     master_key: SecretStr = SecretStr("dev-master-key-not-for-production")
+    #: Rotation seam: during a master-key rotation, set the OLD key here so
+    #: signatures minted with it (unsubscribe tokens already sitting in
+    #: delivered mail) keep verifying. New signatures always use master_key.
+    #: Clear it once the rotation window closes.
+    master_key_previous: SecretStr | None = None
 
     def pilot_recipient_addresses(self) -> tuple[str, ...]:
         """The parsed pilot allowlist (comma-separated, trimmed, no blanks)."""

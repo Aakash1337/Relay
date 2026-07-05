@@ -47,22 +47,33 @@ class UnsubscribeRejected(Exception):
     """The token failed authentication or was structurally invalid."""
 
 
-def _sign(tenant_id: uuid.UUID, lead_id: uuid.UUID, job_id: uuid.UUID) -> str:
-    key = derive_tenant_key(
-        get_settings().master_key.get_secret_value(), str(tenant_id), "unsubscribe"
-    )
+def _sign(
+    master_key: str, tenant_id: uuid.UUID, lead_id: uuid.UUID, job_id: uuid.UUID
+) -> str:
+    key = derive_tenant_key(master_key, str(tenant_id), "unsubscribe")
     payload = f"{_VERSION}.{tenant_id.hex}.{lead_id.hex}.{job_id.hex}"
     return hmac.new(key, payload.encode("utf-8"), "sha256").hexdigest()
 
 
 def build_token(tenant_id: uuid.UUID, lead_id: uuid.UUID, job_id: uuid.UUID) -> str:
-    """Mint the signed token embedded in a send's List-Unsubscribe URL."""
-    sig = _sign(tenant_id, lead_id, job_id)
+    """Mint the signed token embedded in a send's List-Unsubscribe URL.
+
+    Always signs with the CURRENT master key — the previous key (if any)
+    is verify-only during a rotation window.
+    """
+    key = get_settings().master_key.get_secret_value()
+    sig = _sign(key, tenant_id, lead_id, job_id)
     return f"{_VERSION}.{tenant_id.hex}.{lead_id.hex}.{job_id.hex}.{sig}"
 
 
 def verify_token(token: str) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
-    """Return (tenant_id, lead_id, job_id) for a valid token, else raise."""
+    """Return (tenant_id, lead_id, job_id) for a valid token, else raise.
+
+    Verification accepts the current master key and — during a rotation
+    window — RELAY_MASTER_KEY_PREVIOUS, so unsubscribe links already
+    sitting in delivered mail keep working across a rotation. An
+    unsubscribe link that silently dies IS a compliance failure.
+    """
     parts = token.split(".")
     if len(parts) != 5 or parts[0] != _VERSION:
         raise UnsubscribeRejected("malformed unsubscribe token")
@@ -72,10 +83,14 @@ def verify_token(token: str) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
         job_id = uuid.UUID(hex=parts[3])
     except ValueError as exc:
         raise UnsubscribeRejected("malformed unsubscribe token") from exc
-    expected = _sign(tenant_id, lead_id, job_id)
-    if not hmac.compare_digest(parts[4], expected):
-        raise UnsubscribeRejected("bad unsubscribe token signature")
-    return tenant_id, lead_id, job_id
+    settings = get_settings()
+    keys = [settings.master_key.get_secret_value()]
+    if settings.master_key_previous is not None:
+        keys.append(settings.master_key_previous.get_secret_value())
+    for master_key in keys:
+        if hmac.compare_digest(parts[4], _sign(master_key, tenant_id, lead_id, job_id)):
+            return tenant_id, lead_id, job_id
+    raise UnsubscribeRejected("bad unsubscribe token signature")
 
 
 def process_unsubscribe(token: str) -> bool:
