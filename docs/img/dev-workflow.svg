@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 290" font-family="Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555555"/>
+    </marker>
+    <marker id="dRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b85450"/>
+    </marker>
+    <marker id="dYel" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#d6b656"/>
+    </marker>
+  </defs>
+
+  <!-- main lane -->
+  <rect x="16" y="40" width="128" height="56" rx="8" fill="#dae8fc" stroke="#6c8ebf" stroke-width="1.5"/>
+  <text x="80" y="63" text-anchor="middle" fill="#1a1a1a">Branch from main</text>
+  <text x="80" y="80" text-anchor="middle" fill="#555555" font-size="11">one change per branch</text>
+
+  <rect x="174" y="40" width="128" height="56" rx="8" fill="#dae8fc" stroke="#6c8ebf" stroke-width="1.5"/>
+  <text x="238" y="63" text-anchor="middle" fill="#1a1a1a">Make the change</text>
+  <text x="238" y="80" text-anchor="middle" fill="#555555" font-size="11">code + tests together</text>
+
+  <rect x="332" y="40" width="140" height="56" rx="8" fill="#dae8fc" stroke="#6c8ebf" stroke-width="1.5"/>
+  <text x="402" y="63" text-anchor="middle" fill="#1a1a1a">just fix &#183; just test</text>
+  <text x="402" y="80" text-anchor="middle" fill="#555555" font-size="11">suite runs on real Postgres</text>
+
+  <rect x="502" y="40" width="110" height="56" rx="8" fill="#dae8fc" stroke="#6c8ebf" stroke-width="1.5"/>
+  <text x="557" y="63" text-anchor="middle" fill="#1a1a1a">Open a PR</text>
+  <text x="557" y="80" text-anchor="middle" fill="#555555" font-size="11">into main</text>
+
+  <rect x="642" y="40" width="160" height="56" rx="8" fill="#ffe6cc" stroke="#d79b00" stroke-width="1.5"/>
+  <text x="722" y="63" text-anchor="middle" fill="#1a1a1a">CI gate</text>
+  <text x="722" y="80" text-anchor="middle" fill="#555555" font-size="11">ruff + full suite vs Postgres 16</text>
+
+  <rect x="832" y="40" width="112" height="56" rx="8" fill="#d5e8d4" stroke="#82b366" stroke-width="1.5"/>
+  <text x="888" y="73" text-anchor="middle" fill="#1a1a1a">Merge</text>
+
+  <!-- main lane arrows -->
+  <line x1="144" y1="68" x2="172" y2="68" stroke="#555555" stroke-width="1.5" marker-end="url(#d)"/>
+  <line x1="302" y1="68" x2="330" y2="68" stroke="#555555" stroke-width="1.5" marker-end="url(#d)"/>
+  <line x1="472" y1="68" x2="500" y2="68" stroke="#555555" stroke-width="1.5" marker-end="url(#d)"/>
+  <line x1="612" y1="68" x2="640" y2="68" stroke="#555555" stroke-width="1.5" marker-end="url(#d)"/>
+  <line x1="802" y1="68" x2="830" y2="68" stroke="#555555" stroke-width="1.5" marker-end="url(#d)"/>
+  <text x="816" y="58" text-anchor="middle" fill="#82b366" font-size="11">green</text>
+
+  <!-- schema evolution side rule -->
+  <rect x="180" y="170" width="420" height="62" rx="8" fill="#fff2cc" stroke="#d6b656" stroke-width="1.5"/>
+  <text x="390" y="192" text-anchor="middle" fill="#1a1a1a">Touched a model in db/models.py?</text>
+  <text x="390" y="209" text-anchor="middle" fill="#555555" font-size="11">add a matching ALTER to db/sql/001_schema_evolution.sql,</text>
+  <text x="390" y="223" text-anchor="middle" fill="#555555" font-size="11">then just db-migrate (safe to re-run)</text>
+
+  <path d="M 238 96 L 238 168" stroke="#d6b656" stroke-width="1.5" stroke-dasharray="5,4" fill="none" marker-end="url(#dYel)"/>
+  <path d="M 402 232 L 402 98" stroke="#d6b656" stroke-width="1.5" stroke-dasharray="5,4" fill="none" marker-end="url(#dYel)" transform="translate(0,0)"/>
+
+  <!-- CI failure loop -->
+  <path d="M 722 96 L 722 260 L 160 260 L 160 68 L 172 68" stroke="#b85450" stroke-width="1.5" stroke-dasharray="5,4" fill="none" marker-end="url(#dRed)"/>
+  <text x="480" y="252" text-anchor="middle" fill="#b85450" font-size="11">red suite blocks the merge: fix and push again</text>
+</svg>
