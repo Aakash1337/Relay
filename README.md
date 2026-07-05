@@ -62,6 +62,10 @@ Duplicate protection is a unique constraint. The test suite runs
 against a real Postgres and attacks those mechanisms directly, raw SQL
 included, because mocks can't prove any of this.
 
+For a deeper walkthrough of the runtime — the drivers, the state
+machine as control flow, where crash-safety comes from, and the send
+handoff — see [docs/control-flow.md](docs/control-flow.md).
+
 ## What's in the box
 
 | Area | What you get |
