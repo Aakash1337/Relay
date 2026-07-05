@@ -169,8 +169,36 @@ scripts/          demo, seeding, evals, benchmark, local-Postgres helper
 
 ## Development
 
-GitHub Actions runs ruff and the full suite against a Postgres 16
-service on every push. Locally: `just lint`, `just fix`, `just test-cov`.
+The loop for making a change:
+
+1. Branch from `main`, one change per branch, PR back into `main`.
+2. Code, then `just fix` (format + lint) and `just test`. The suite
+   needs a running Postgres and resets its own `relay_test` database
+   every run, so it can't touch your dev data.
+3. Changed a model in `db/models.py`? Add a matching idempotent
+   `ALTER` to `db/sql/001_schema_evolution.sql`. Table creation only
+   covers brand-new tables; existing databases pick up new columns
+   from that file. `just db-migrate` is safe to re-run any time.
+4. Changed the state machine or a trigger? The SQL in `db/sql/`
+   re-applies on migrate, and transition rules re-seed from the Python
+   map in `domain/states.py`, which is the single source of truth.
+5. Decisions worth remembering get a dated record in `docs/decisions/`.
+
+CI (GitHub Actions) runs ruff and the full suite against a Postgres 16
+service on every push; a red suite blocks the merge. Other useful
+commands: `just test-exit-gate` for the invariant subset,
+`just test-cov` for coverage, `just bench` to check a change didn't
+slow the funnel down.
+
+Three conventions matter more here than in most repos:
+
+- Tests run against real Postgres on purpose. If you feel the urge to
+  mock the database, the thing you're testing is probably one of the
+  guarantees that only exists in the database.
+- New safety behavior ships with an adversarial test that attacks it,
+  not just a happy-path one.
+- `.env` never gets committed, and every new setting gets a documented
+  line in `.env.example`.
 
 ## Where things stand
 
