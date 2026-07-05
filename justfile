@@ -63,9 +63,9 @@ db-local-stop:
 
 # ── Infrastructure (Docker) ─────────────────────────────────────────────────
 
-# Start core infra: Postgres + Redis + Mailpit
+# Start core infra: Postgres + Mailpit
 infra-up:
-    docker compose up -d postgres redis mailpit
+    docker compose up -d postgres mailpit
 
 # Start the full stack including the n8n workflow spine
 stack-up:
