@@ -22,8 +22,51 @@ def canonical_email(email: str) -> str:
 
 
 def hash_email(email: str) -> str:
-    """Stable digest of an email address (suppression / dedup / log key)."""
+    """Keyed digest of an email address (suppression / dedup / log key).
+
+    HMAC-SHA256 under ``RELAY_EMAIL_HASH_PEPPER``: email addresses are
+    guessable, so an unkeyed hash of one is reversible by anyone holding
+    a candidate address — which defeats the point of storing only a hash
+    for DSR-erased do-not-contact entries. The pepper is a long-lived
+    secret managed alongside the master key (KMS in production); unlike
+    the master key it must NOT rotate casually — every stored digest
+    depends on it.
+    """
+    from relay.config import get_settings  # deferred: avoid import cycle
+
+    pepper = get_settings().email_hash_pepper.get_secret_value()
+    return hmac.new(
+        pepper.encode("utf-8"),
+        canonical_email(email).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def legacy_hash_email(email: str) -> str:
+    """The pre-pepper digest (unkeyed SHA-256) — dual-lookup only.
+
+    Rows written before the pepper landed carry this digest. It is never
+    written anymore; it is only computed to MATCH old rows while
+    ``RELAY_EMAIL_HASH_LEGACY_LOOKUP`` keeps the transition window open.
+    """
     return sha256_hex(canonical_email(email))
+
+
+def email_hash_candidates(email: str) -> tuple[str, ...]:
+    """Every digest this address may be stored under, peppered first.
+
+    Membership checks against long-lived hash columns (suppression,
+    lead/job matching, DSR erasure) must test all candidates during the
+    dual-lookup transition; new writes always use ``hash_email``. Once no
+    pre-pepper digests remain, set RELAY_EMAIL_HASH_LEGACY_LOOKUP=false
+    and this collapses to the peppered digest alone.
+    """
+    from relay.config import get_settings  # deferred: avoid import cycle
+
+    peppered = hash_email(email)
+    if get_settings().email_hash_legacy_lookup:
+        return (peppered, legacy_hash_email(email))
+    return (peppered,)
 
 
 def email_domain(email: str) -> str:

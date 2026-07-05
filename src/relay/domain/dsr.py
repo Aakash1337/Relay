@@ -34,7 +34,7 @@ from relay.crm.registry import crm_adapter
 from relay.db.engine import tenant_session
 from relay.db.models import Lead
 from relay.domain.suppression import add_suppression
-from relay.hashing import email_domain, hash_email
+from relay.hashing import email_domain, email_hash_candidates, hash_email
 from relay.logs import get_logger
 
 log = get_logger(__name__)
@@ -111,8 +111,18 @@ def execute_erasure(
                 scope="tenant",
                 domain=domain,
             )
-        counts = _run_erase(session, tenant_id, email_hash)
-        lead_ids = [str(x) for x in (counts.pop("lead_ids", None) or [])]
+        # Erase under EVERY digest the address may be stored under (pepper
+        # dual-lookup): a pre-pepper lead row carries the legacy digest and
+        # must not survive an erasure request.
+        counts: dict[str, int] = {}
+        lead_ids: list[str] = []
+        for candidate in email_hash_candidates(email):
+            candidate_counts = _run_erase(session, tenant_id, candidate)
+            for x in candidate_counts.pop("lead_ids", None) or []:
+                if str(x) not in lead_ids:
+                    lead_ids.append(str(x))
+            for key, value in candidate_counts.items():
+                counts[key] = counts.get(key, 0) + int(value)
         audit.record(
             session,
             tenant_id=tenant_id,

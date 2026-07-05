@@ -43,7 +43,7 @@ from relay.db.models import Lead, Suppression
 from relay.domain.state_machine import transition
 from relay.domain.states import LeadState
 from relay.domain.suppression import add_suppression
-from relay.hashing import email_domain, hash_email
+from relay.hashing import email_domain, email_hash_candidates, hash_email
 from relay.logs import get_logger
 
 log = get_logger(__name__)
@@ -229,14 +229,19 @@ def _recipients(event: dict) -> list[str]:
     return (event.get("mail") or {}).get("destination", []) or []
 
 
-def _tenants_for_hash(recipient_hash: str) -> list[uuid.UUID]:
+def _tenants_for_hash(candidates: tuple[str, ...]) -> list[uuid.UUID]:
+    """Tenants that ever queued a job for any digest of the address
+    (pepper dual-lookup: jobs frozen pre-pepper carry the legacy digest)."""
+    tenants: set[uuid.UUID] = set()
     with untenanted_app_session() as session:
-        return list(
-            session.execute(
-                text("SELECT fn_tenants_for_recipient_hash(:h)"),
-                {"h": recipient_hash},
-            ).scalars()
-        )
+        for candidate in candidates:
+            tenants.update(
+                session.execute(
+                    text("SELECT fn_tenants_for_recipient_hash(:h)"),
+                    {"h": candidate},
+                ).scalars()
+            )
+    return sorted(tenants, key=str)
 
 
 def _process_ses_event(event: dict, stats: IngestStats) -> None:
@@ -252,8 +257,9 @@ def _process_ses_event(event: dict, stats: IngestStats) -> None:
             stats.ignored += 1
             continue
         recipient_hash = hash_email(address)
+        candidates = email_hash_candidates(address)
         domain = email_domain(address)
-        tenants = _tenants_for_hash(recipient_hash)
+        tenants = _tenants_for_hash(candidates)
         if not tenants:
             log.warning(
                 "provider event for unknown recipient",
@@ -265,9 +271,9 @@ def _process_ses_event(event: dict, stats: IngestStats) -> None:
         for tenant_id in tenants:
             stats.tenants.add(str(tenant_id))
             if kind == "Bounce":
-                _handle_bounce(tenant_id, event, address, recipient_hash, stats)
+                _handle_bounce(tenant_id, event, address, candidates, stats)
             elif kind == "Complaint":
-                _handle_complaint(tenant_id, address, recipient_hash, domain, stats)
+                _handle_complaint(tenant_id, address, candidates, domain, stats)
             elif kind == "Delivery":
                 _handle_delivery(tenant_id, recipient_hash, stats)
             else:
@@ -278,14 +284,14 @@ def _handle_bounce(
     tenant_id: uuid.UUID,
     event: dict,
     address: str,
-    recipient_hash: str,
+    candidates: tuple[str, ...],
     stats: IngestStats,
 ) -> None:
     bounce_type = (event.get("bounce") or {}).get("bounceType", "")
     if bounce_type != "Permanent":
         log.info(
             "soft bounce ignored",
-            recipient_hash=recipient_hash,
+            recipient_hash=candidates[0],
             bounce_type=bounce_type,
         )
         stats.ignored += 1
@@ -294,7 +300,7 @@ def _handle_bounce(
         leads = (
             session.execute(
                 select(Lead).where(
-                    Lead.email_hash == recipient_hash,
+                    Lead.email_hash.in_(candidates),
                     Lead.state == str(LeadState.SENT),
                 )
             )
@@ -324,7 +330,7 @@ def _handle_bounce(
             existing = (
                 session.execute(
                     select(Suppression).where(
-                        Suppression.email_hash == recipient_hash,
+                        Suppression.email_hash.in_(candidates),
                         Suppression.reason == "hard_bounce",
                     )
                 )
@@ -349,7 +355,7 @@ def _handle_bounce(
 def _handle_complaint(
     tenant_id: uuid.UUID,
     address: str,
-    recipient_hash: str,
+    candidates: tuple[str, ...],
     domain: str,
     stats: IngestStats,
 ) -> None:
@@ -357,7 +363,7 @@ def _handle_complaint(
         existing = (
             session.execute(
                 select(Suppression).where(
-                    Suppression.email_hash == recipient_hash,
+                    Suppression.email_hash.in_(candidates),
                     Suppression.reason == "complaint",
                 )
             )

@@ -19,7 +19,7 @@ from typing import Any
 
 from relay.config import get_settings
 from relay.db.models import Lead, OutreachDraft, SendJob
-from relay.hashing import hash_email
+from relay.hashing import email_hash_candidates
 from relay.ingest.unsubscribe import build_token
 from relay.logs import get_logger
 from relay.senders.base import RealSendUnavailable
@@ -65,13 +65,17 @@ class SESSender:
         self._unsubscribe_mailto = settings.unsubscribe_mailto
         self._unsubscribe_url = settings.unsubscribe_url
         self._allowlist = frozenset(
-            hash_email(a) for a in settings.pilot_recipient_addresses()
+            candidate
+            for a in settings.pilot_recipient_addresses()
+            for candidate in email_hash_candidates(a)
         )
 
     def send(self, *, job: SendJob, draft: OutreachDraft, lead: Lead) -> str:
         # Last-hop cross-check: the address we are about to hand to the
-        # provider must hash to the job's frozen recipient identity.
-        if hash_email(lead.email) != job.recipient_email_hash:
+        # provider must hash to the job's frozen recipient identity —
+        # under either digest scheme (pepper dual-lookup), since the
+        # job's hash was frozen at queue time.
+        if job.recipient_email_hash not in email_hash_candidates(lead.email):
             raise RealSendUnavailable(
                 "refusing send: lead address does not match the job's "
                 "frozen recipient hash"

@@ -33,7 +33,7 @@ from relay.db.models import Lead, Suppression
 from relay.domain.state_machine import transition
 from relay.domain.states import LeadState, is_transition_allowed
 from relay.domain.suppression import add_suppression
-from relay.hashing import derive_tenant_key
+from relay.hashing import derive_tenant_key, email_hash_candidates
 from relay.logs import get_logger
 
 log = get_logger(__name__)
@@ -127,7 +127,7 @@ def process_unsubscribe(token: str) -> bool:
                 session.execute(
                     select(Suppression).where(
                         Suppression.tenant_id == tenant_id,
-                        Suppression.email_hash == lead.email_hash,
+                        Suppression.email_hash.in_(email_hash_candidates(lead.email)),
                         Suppression.reason == "unsubscribe",
                     )
                 )

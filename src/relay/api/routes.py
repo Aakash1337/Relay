@@ -39,6 +39,7 @@ from relay.domain.approval import (
     review_draft,
 )
 from relay.domain.state_machine import TransitionError
+from relay.domain.suppression import add_suppression
 from relay.economics import campaign_economics
 from relay.guardrails.harness import GuardrailViolation
 from relay.hashing import email_domain, hash_api_key, hash_email
@@ -112,6 +113,41 @@ def rotate_tenant_key(tenant_id: uuid.UUID) -> schemas.TenantKeyRotateResponse:
             payload={"note": "api key rotated; old key invalidated"},
         )
     return schemas.TenantKeyRotateResponse(id=tenant_id, api_key=api_key)
+
+
+@router.post(
+    "/internal/suppression/global",
+    response_model=schemas.GlobalSuppressionResponse,
+    dependencies=[Depends(require_admin)],
+    status_code=status.HTTP_201_CREATED,
+)
+def add_global_suppression(
+    body: schemas.GlobalSuppressionRequest,
+) -> schemas.GlobalSuppressionResponse:
+    """Create a platform-wide do-not-contact entry (§17 scope decision).
+
+    Global scope blocks EVERY tenant's sends to the address, so it is an
+    admin action: RLS rejects scope='global' from the application role.
+    Runs on the admin connection (definer_bypass policy).
+    """
+    from relay.db.engine import admin_session as _admin_session
+
+    with _admin_session() as session:
+        if session.get(Tenant, body.tenant_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "tenant not found")
+        entry = add_suppression(
+            session,
+            tenant_id=body.tenant_id,
+            reason=body.reason,
+            source="manual",
+            created_by="admin",
+            actor_type="human",
+            email=str(body.email),
+            scope="global",
+        )
+        return schemas.GlobalSuppressionResponse(
+            id=entry.id, email_hash=entry.email_hash, reason=entry.reason
+        )
 
 
 # ── Lead source register ───────────────────────────────────────────────────

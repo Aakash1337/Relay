@@ -64,6 +64,17 @@ BEGIN
 END
 $$;
 
+-- ── Suppression: 'global' scope is a PLATFORM decision (§17, decided) ───────
+-- A global row blocks EVERY tenant's sends while being invisible to and
+-- irremovable by the tenants it affects — so the application role may not
+-- create one. Admin paths (schema owner, definer_bypass) insert them via
+-- the /internal/suppression/global endpoint. Reads are unchanged:
+-- fn_is_suppressed (SECURITY DEFINER) honors global rows from any tenant.
+DROP POLICY IF EXISTS tenant_isolation ON suppression;
+CREATE POLICY tenant_isolation ON suppression
+  USING (tenant_id = fn_current_tenant())
+  WITH CHECK (tenant_id = fn_current_tenant() AND scope <> 'global');
+
 -- ── Least-privilege grants for the application role ─────────────────────────
 GRANT USAGE ON SCHEMA public TO relay_app;
 

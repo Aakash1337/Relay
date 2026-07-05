@@ -58,6 +58,25 @@ class TenantKeyRotateResponse(BaseModel):
     api_key: str
 
 
+class GlobalSuppressionRequest(BaseModel):
+    """Platform-level do-not-contact entry (admin only). A global row
+    blocks every tenant's sends to the address, so creating one is not a
+    tenant capability — RLS rejects scope='global' from the app role."""
+
+    #: The tenant on whose behalf/record the entry is created (audit).
+    tenant_id: uuid.UUID
+    email: EmailAddress
+    reason: Literal["manual", "legal_delete", "do_not_contact"] = "do_not_contact"
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class GlobalSuppressionResponse(BaseModel):
+    id: uuid.UUID
+    scope: Literal["global"] = "global"
+    email_hash: str
+    reason: str
+
+
 # ── Lead source register (§7) ───────────────────────────────────────────────
 
 
