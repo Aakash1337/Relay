@@ -156,6 +156,15 @@ The exit-gate ledger — what is pinned by tests versus what needs an
 operator decision (throughput target, per-tenant §6 posture) — is
 [docs/phase4-readiness.md](docs/phase4-readiness.md).
 
+Prototype utilities on top of the phases:
+
+| Capability | Where |
+| --- | --- |
+| **Multi-step sequences**: `sequence_length`/`sequence_delay_hours` per campaign; step N+1 re-enters the pipeline loop after the no-reply delay, drafts its own version, and needs its own §10 approval; reply/bounce/unsubscribe/suppression cancel structurally | `pipeline/runner.py`, `domain/states.py` |
+| **Region-rules seam**: `RELAY_REGION_BASIS_RULES` (JSON region → allowed lawful bases) enforced at the eligibility gate; empty = permissive placeholder, and once rules exist an unlisted region is blocked. The Legal/Data Preflight's jurisdiction matrix becomes a config edit, not code | `config.py`, `domain/eligibility.py` |
+| **Throughput benchmark**: `uv run python scripts/benchmark_throughput.py --tenants N --leads M --concurrency C` — per-phase wall-clock and leads/sec against real Postgres, the instrument for the Phase 4 throughput gate | `scripts/benchmark_throughput.py` |
+| **Admin console**: `/admin` — self-contained page over the admin API (onboard, rotate key, attest sender identity, global suppression); adds convenience, no capability — every action is token-gated server-side | `api/admin_ui.py` |
+
 ---
 
 ## Exit gate — every item is a passing test

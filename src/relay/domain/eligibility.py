@@ -131,17 +131,35 @@ def evaluate(
         lead.email_verified,
         "verified" if lead.email_verified else "email not verified",
     )
-    # NOTE: SIMULATED_SAFE_BASES == every valid basis today, so this check
-    # cannot fail for a DB-valid basis — it is a placeholder for the
-    # region-specific lawful-basis rules that the Legal/Data Preflight will
-    # populate (region_assumption is stored on every lead for exactly that
-    # future use, but no gate reads it yet). Kept as a named seam.
-    check(
-        "lawful_send_basis",
-        lead.lawful_basis in SIMULATED_SAFE_BASES,
-        f"lawful_basis={lead.lawful_basis}, region={lead.region_assumption} "
-        "(region-specific rules are a future Legal/Data Preflight item)",
-    )
+    # Region-specific lawful-basis rules: the seam the Legal/Data
+    # Preflight's jurisdiction matrix populates via
+    # RELAY_REGION_BASIS_RULES. Unset (the prototype default) keeps the
+    # placeholder behavior; once rules exist, a region absent from the
+    # map is BLOCKED — an unlisted region is an uncleared one.
+    region_rules = get_settings().region_rules()
+    if region_rules:
+        allowed_bases = region_rules.get(lead.region_assumption)
+        if allowed_bases is None:
+            check(
+                "lawful_send_basis",
+                False,
+                f"region {lead.region_assumption!r} has no entry in "
+                "RELAY_REGION_BASIS_RULES (unlisted = uncleared)",
+            )
+        else:
+            check(
+                "lawful_send_basis",
+                lead.lawful_basis in allowed_bases,
+                f"lawful_basis={lead.lawful_basis} vs allowed "
+                f"{sorted(allowed_bases)} for region {lead.region_assumption}",
+            )
+    else:
+        check(
+            "lawful_send_basis",
+            lead.lawful_basis in SIMULATED_SAFE_BASES,
+            f"lawful_basis={lead.lawful_basis}, region={lead.region_assumption} "
+            "(no region rules configured; Legal/Data Preflight populates them)",
+        )
     # Phase 1B invariant: the four real-DATA bases are draft-only in every
     # mode. Phase 1C opened real sends ONLY for test_consent (a
     # compliance-free basis, our own inboxes) — the real-data bases remain
