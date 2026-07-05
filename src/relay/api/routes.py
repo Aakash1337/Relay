@@ -40,7 +40,7 @@ from relay.domain.approval import (
 )
 from relay.domain.state_machine import TransitionError
 from relay.domain.suppression import add_suppression
-from relay.economics import campaign_economics
+from relay.economics import campaign_economics, tenant_economics
 from relay.guardrails.harness import GuardrailViolation
 from relay.hashing import email_domain, hash_api_key, hash_email
 from relay.ingest.ses_events import EventRejected, process_sns_envelope
@@ -148,6 +148,66 @@ def add_global_suppression(
         return schemas.GlobalSuppressionResponse(
             id=entry.id, email_hash=entry.email_hash, reason=entry.reason
         )
+
+
+@router.post(
+    "/internal/tenants/onboard",
+    response_model=schemas.TenantOnboardResponse,
+    dependencies=[Depends(require_admin)],
+    status_code=status.HTTP_201_CREATED,
+)
+def onboard_tenant(
+    body: schemas.TenantOnboardRequest,
+) -> schemas.TenantOnboardResponse:
+    """Self-serve onboarding (Phase 4): tenant + key + source + campaign
+    + quotas in ONE atomic call — a new client starts working without
+    anyone hand-editing config. Everything else (leads, pipeline, review)
+    happens through the tenant's own API key."""
+    api_key = f"rk_{secrets.token_urlsafe(32)}"
+    try:
+        with admin_session() as session:
+            tenant = Tenant(
+                name=body.name,
+                api_key_hash=hash_api_key(api_key),
+                daily_send_cap=body.daily_send_cap,
+                monthly_spend_cap_units=body.monthly_spend_cap_units,
+            )
+            session.add(tenant)
+            session.flush()
+            source = LeadSourceRegister(tenant_id=tenant.id, **body.source.model_dump())
+            campaign = Campaign(tenant_id=tenant.id, **body.campaign.model_dump())
+            session.add_all([source, campaign])
+            session.flush()
+            audit.record(
+                session,
+                tenant_id=tenant.id,
+                actor_type="human",
+                actor_id="admin",
+                action="tenant.onboard",
+                entity_type="tenant",
+                entity_id=str(tenant.id),
+                payload={
+                    "source_id": str(source.id),
+                    "campaign_id": str(campaign.id),
+                    "daily_send_cap": body.daily_send_cap,
+                    "monthly_spend_cap_units": body.monthly_spend_cap_units,
+                },
+            )
+            response = schemas.TenantOnboardResponse(
+                tenant_id=tenant.id,
+                name=tenant.name,
+                api_key=api_key,
+                source_id=source.id,
+                campaign_id=campaign.id,
+                daily_send_cap=body.daily_send_cap,
+                monthly_spend_cap_units=body.monthly_spend_cap_units,
+            )
+    except IntegrityError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail=f"onboarding conflict: {str(exc.orig)[:200]}",
+        ) from exc
+    return response
 
 
 # ── Lead source register ───────────────────────────────────────────────────
@@ -390,13 +450,13 @@ def run_pipeline(
     with tenant_session(tenant_id) as session:
         if session.get(Lead, lead_id) is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "lead not found")
-    runner = PipelineRunner(
-        tenant_id,
-        lead_id=lead_id,
-        max_iterations=body.max_iterations,
-        budget_units=body.budget_units,
-    )
     try:
+        runner = PipelineRunner(
+            tenant_id,
+            lead_id=lead_id,
+            max_iterations=body.max_iterations,
+            budget_units=body.budget_units,
+        )
         outcome = runner.run()
     except GuardrailViolation as exc:
         raise HTTPException(
@@ -658,6 +718,25 @@ def economics(
 
 
 # ── Observability (Phase 2) ─────────────────────────────────────────────────
+
+
+@router.get("/economics", response_model=schemas.TenantEconomicsResponse)
+def economics_tenant(
+    tenant_id: uuid.UUID = Depends(require_tenant),
+) -> schemas.TenantEconomicsResponse:
+    """Phase 4 cost attribution: the client-profitability view across all
+    of this tenant's campaigns, plus headroom under the monthly cap."""
+    report = tenant_economics(tenant_id)
+    return schemas.TenantEconomicsResponse(
+        tenant_id=report.tenant_id,
+        funnel=report.funnel,
+        cost_units_total=report.cost_units_total,
+        cost_units_30d=report.cost_units_30d,
+        cost_units_per_meeting=report.cost_units_per_meeting,
+        cost_usd_per_meeting=report.cost_usd_per_meeting,
+        monthly_spend_cap_units=report.monthly_spend_cap_units,
+        spend_cap_remaining_units=report.spend_cap_remaining_units,
+    )
 
 
 @router.get("/metrics", response_model=schemas.MetricsResponse)

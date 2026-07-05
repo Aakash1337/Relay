@@ -19,7 +19,7 @@ from sqlalchemy import func, select
 
 from relay.config import get_settings
 from relay.db.engine import tenant_session
-from relay.db.models import PipelineRun, SendJob, Suppression
+from relay.db.models import PipelineRun, SendJob, Suppression, Tenant
 from relay.logs import get_logger
 
 log = get_logger(__name__)
@@ -130,6 +130,46 @@ def evaluate_alerts(tenant_id: uuid.UUID) -> list[Alert]:
                             f"{settings.alert_bounce_rate:.1%})"
                         ),
                         value=rate,
+                    )
+                )
+
+        # ── Phase 4: tenant spend against its monthly cap ───────────────────
+        # Warn at 80% so the operator acts BEFORE the harness starts
+        # refusing new runs at 100%.
+        tenant = session.get(Tenant, tenant_id)
+        cap = None if tenant is None else tenant.monthly_spend_cap_units
+        if cap is not None and float(cap) > 0:
+            cap_units = float(cap)
+            spend_30d = float(
+                session.execute(
+                    select(func.coalesce(func.sum(PipelineRun.cost_units), 0)).where(
+                        PipelineRun.started_at >= now - timedelta(days=30)
+                    )
+                ).scalar_one()
+            )
+            share = spend_30d / cap_units
+            if share >= 1.0:
+                alerts.append(
+                    Alert(
+                        rule="tenant_spend_cap_reached",
+                        severity="critical",
+                        detail=(
+                            f"{spend_30d:.1f} of {cap_units:.1f} units in 30d "
+                            "— new pipeline runs are being refused"
+                        ),
+                        value=share,
+                    )
+                )
+            elif share >= 0.8:
+                alerts.append(
+                    Alert(
+                        rule="tenant_spend_cap_approaching",
+                        severity="warning",
+                        detail=(
+                            f"{spend_30d:.1f} of {cap_units:.1f} units in 30d "
+                            f"({share:.0%} of the monthly cap)"
+                        ),
+                        value=share,
                     )
                 )
 

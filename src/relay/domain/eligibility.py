@@ -25,7 +25,14 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from relay.config import get_settings
-from relay.db.models import Campaign, Lead, OutreachDraft, SendJob, Suppression
+from relay.db.models import (
+    Campaign,
+    Lead,
+    OutreachDraft,
+    SendJob,
+    Suppression,
+    Tenant,
+)
 from relay.domain.suppression import is_suppressed
 from relay.domain.vocab import (
     REAL_DATA_BASES,
@@ -255,11 +262,19 @@ def evaluate(
                 SendJob.started_at >= now - timedelta(hours=24),
             )
         ).scalar_one()
+        # Per-tenant quota (Phase 4): a tenant's daily_send_cap overrides
+        # the global config when set (RLS: a tenant can read its own row).
+        tenant_row = session.get(Tenant, lead.tenant_id)
+        configured_cap = settings.real_send_daily_cap
+        cap_source = "config"
+        if tenant_row is not None and tenant_row.daily_send_cap is not None:
+            configured_cap = tenant_row.daily_send_cap
+            cap_source = "tenant quota"
         # Warmup ramp: a young sending identity earns volume gradually.
         # Effective cap on day N since the tenant's first real send is
         # min(configured cap, start + increment·N); disabled when start=0.
-        effective_cap = settings.real_send_daily_cap
-        cap_detail = f"cap {settings.real_send_daily_cap}"
+        effective_cap = configured_cap
+        cap_detail = f"cap {configured_cap} ({cap_source})"
         if settings.warmup_daily_start > 0:
             first_send = session.execute(
                 select(func.min(SendJob.started_at)).where(

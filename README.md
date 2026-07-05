@@ -140,6 +140,18 @@ items, plus the three deliberately parked decisions — is recorded in
 
 ---
 
+## Phase 4 — productization & scale (in progress)
+
+| Capability | Where |
+| --- | --- |
+| **Self-serve onboarding**: `POST /internal/tenants/onboard` provisions the full working chain — tenant, API key, registered lead source, campaign, quotas — in one atomic admin call; a new client starts without anyone hand-editing config | `api/routes.py` |
+| **Per-tenant quotas & spend controls**: `tenants.daily_send_cap` overrides the global real-send cap when set; `tenants.monthly_spend_cap_units` is a rolling-30-day cost ceiling — at/over it, NEW pipeline runs refuse to start as a recorded, audited kill (`killed_tenant_spend_cap`) while in-flight runs finish under their own budget. Alerts warn at 80% and go critical at 100%, before and as the wall hits | `db/models.py`, `guardrails/harness.py`, `domain/eligibility.py`, `observability/alerts.py` |
+| **Cost attribution**: `GET /economics` — the client-profitability view: cross-campaign funnel, total and rolling-30d spend, cost per booked meeting (USD when calibrated), and headroom under the monthly cap | `economics.py` |
+| **Multi-tenant concurrency, proven**: two tenants walk full cohorts through racing pipelines and workers simultaneously; each tenant's RLS view afterwards contains exactly its own rows | `tests/test_phase4_scale.py` |
+| **Schema evolution seam**: `db/sql/001_schema_evolution.sql` carries idempotent ALTERs for existing databases (`metadata.create_all` only creates missing tables) | `db/sql/` |
+
+---
+
 ## Exit gate — every item is a passing test
 
 Run them: `just test-exit-gate` (or `just test` for the full suite).
@@ -298,6 +310,8 @@ CI (GitHub Actions) runs ruff + the full test suite against a Postgres
 - **Multi-step sequences** — the send path currently pins
   `sequence_step = 1`; the duplicate/idempotency check must be
   generalized before step 2 exists.
-- **Phase 3–4** — production readiness and multi-tenant productization
-  (KMS-managed master key, per-mailbox capacity model, tenant
-  onboarding).
+- **Phase 4 remainder** — per-tenant mailbox/domain isolation model for
+  real sending at volume, concurrency scaling past the single-process
+  worker, self-serve configuration UI.
+- **Production posture** — KMS-managed master key + email-hash pepper,
+  per-mailbox capacity model, the §6 provider revisit.

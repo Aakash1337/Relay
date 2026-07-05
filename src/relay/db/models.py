@@ -84,11 +84,27 @@ def build_idempotency_key(
 
 class Tenant(Base):
     __tablename__ = "tenants"
+    __table_args__ = (
+        CheckConstraint(
+            "daily_send_cap IS NULL OR daily_send_cap >= 0",
+            name="ck_tenants_daily_send_cap",
+        ),
+        CheckConstraint(
+            "monthly_spend_cap_units IS NULL OR monthly_spend_cap_units >= 0",
+            name="ck_tenants_spend_cap",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     # Only the hash is stored; the raw key is shown once at bootstrap.
     api_key_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    # ── Phase 4 per-tenant quotas (NULL = fall back to global config) ──────
+    #: Overrides RELAY_REAL_SEND_DAILY_CAP for this tenant's real sends.
+    daily_send_cap: Mapped[int | None] = mapped_column(Integer)
+    #: Rolling-30-day guardrail-unit spend ceiling: at/over it, NEW pipeline
+    #: runs refuse to start (in-flight runs finish under their own budget).
+    monthly_spend_cap_units: Mapped[float | None] = mapped_column(Numeric(12, 2))
     created_at: Mapped[datetime] = _created_at()
 
 
@@ -733,7 +749,7 @@ class PipelineRun(Base):
     __table_args__ = (
         CheckConstraint(
             "status IN ('running','completed','killed_iteration_cap',"
-            "'killed_budget','failed')",
+            "'killed_budget','killed_tenant_spend_cap','failed')",
             name="ck_runs_status",
         ),
         CheckConstraint("max_iterations >= 1", name="ck_runs_max_iterations"),
