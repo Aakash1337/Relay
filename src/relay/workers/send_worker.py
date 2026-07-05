@@ -25,7 +25,7 @@ from sqlalchemy import select, text
 
 from relay import audit
 from relay.db.engine import tenant_session, untenanted_app_session
-from relay.db.models import Campaign, Lead, OutreachDraft, SendJob
+from relay.db.models import Campaign, Lead, OutreachDraft, SendJob, Tenant
 from relay.domain import eligibility
 from relay.domain.state_machine import transition
 from relay.domain.states import LeadState
@@ -50,18 +50,24 @@ class WorkerStats:
         return self.sent + self.blocked + self.failed
 
 
-def process_pending(max_jobs: int = 100) -> WorkerStats:
-    """Process queued send jobs across all tenants, one tenant at a time.
+def process_pending(max_jobs: int = 100, *, concurrency: int = 1) -> WorkerStats:
+    """Process queued send jobs across all tenants.
 
     Every tick starts with a crash-recovery pass: orphaned runs get
     closed and orphaned mid-send jobs failed BEFORE new work is claimed,
     so the system self-heals on its normal schedule with no separate
     recovery deployment to forget.
+
+    ``concurrency`` (Phase 4 scaling): tenants are independent work
+    streams — each job runs in its own transaction under its tenant's
+    RLS context, claims are FOR UPDATE SKIP LOCKED, and the real-send
+    caps serialize per tenant on an advisory lock — so processing
+    DIFFERENT tenants in parallel threads changes throughput, not
+    semantics. ``max_jobs`` bounds each tenant's stream.
     """
     from relay.pipeline.recovery import recover_orphans
 
     recover_orphans()
-    stats = WorkerStats()
     with untenanted_app_session() as session:
         tenant_ids = [
             row[0]
@@ -69,16 +75,37 @@ def process_pending(max_jobs: int = 100) -> WorkerStats:
                 text("SELECT * FROM fn_tenants_with_queued_jobs()")
             )
         ]
-    for tenant_id in tenant_ids:
-        while stats.processed < max_jobs:
-            if not _process_one(tenant_id, stats):
+
+    def drain_tenant(tenant_id: uuid.UUID) -> WorkerStats:
+        tenant_stats = WorkerStats()
+        while tenant_stats.processed < max_jobs:
+            if not _process_one(tenant_id, tenant_stats):
                 break
+        return tenant_stats
+
+    stats = WorkerStats()
+    if concurrency > 1 and len(tenant_ids) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        workers = min(concurrency, len(tenant_ids))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            per_tenant = list(pool.map(drain_tenant, tenant_ids))
+    else:
+        per_tenant = [drain_tenant(tenant_id) for tenant_id in tenant_ids]
+    for tenant_stats in per_tenant:
+        stats.sent += tenant_stats.sent
+        stats.blocked += tenant_stats.blocked
+        stats.failed += tenant_stats.failed
+        stats.deferred += tenant_stats.deferred
+        stats.errors.extend(tenant_stats.errors)
     log.info(
         "worker pass complete",
         sent=stats.sent,
         blocked=stats.blocked,
         failed=stats.failed,
         deferred=stats.deferred,
+        tenants=len(tenant_ids),
+        concurrency=min(concurrency, max(len(tenant_ids), 1)),
     )
     return stats
 
@@ -176,7 +203,15 @@ def _process_one(tenant_id: uuid.UUID, stats: WorkerStats) -> bool:
             session.flush()
 
             sender = sender_for_mode(job.mode)
-            message_id = sender.send(job=job, draft=draft, lead=lead)
+            tenant = session.get(Tenant, tenant_id)
+            message_id = sender.send(
+                job=job,
+                draft=draft,
+                lead=lead,
+                sender_identity=(
+                    tenant.sender_from_address if tenant is not None else None
+                ),
+            )
 
             job.status = "sent"
             job.provider_message_id = message_id
@@ -294,8 +329,14 @@ def main() -> None:
         help="Process pending jobs once and exit (default behavior)",
     )
     parser.add_argument("--max-jobs", type=int, default=100)
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Tenants processed in parallel (per-tenant order is kept)",
+    )
     args = parser.parse_args()
-    stats = process_pending(max_jobs=args.max_jobs)
+    stats = process_pending(max_jobs=args.max_jobs, concurrency=args.concurrency)
     log.info(
         "worker finished",
         sent=stats.sent,

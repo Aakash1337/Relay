@@ -714,3 +714,27 @@ def test_tenant_daily_cap_override_binds_below_config(tenant_a, factory_a, pilot
             )
         ).scalar_one()
         assert "cap 1 (tenant quota)" in (reason or "")
+
+
+def test_tenant_sender_identity_overrides_global_from(
+    tenant_a, tenant_b, factory_a, factory_b, pilot_env
+):
+    """Phase 4 mailbox/domain ownership: a tenant with its own verified
+    from-address sends AS that identity; a tenant without one uses the
+    global RELAY_SES_FROM. Sending isolation, visible at the provider."""
+    from relay.db.engine import admin_session
+    from relay.db.models import Tenant
+
+    ta, _ = tenant_a
+    tb, _ = tenant_b
+    with admin_session() as session:
+        session.get(Tenant, ta).sender_from_address = "team-a@testings.work"
+
+    lead_a = _pilot_lead(factory_a)
+    _walk_to_queue(ta, lead_a)
+    lead_b = _pilot_lead(factory_b)
+    _walk_to_queue(tb, lead_b)
+    assert process_pending().sent == 2
+
+    froms = {r["FromEmailAddress"] for r in pilot_env.requests}
+    assert froms == {"team-a@testings.work", "pilot@testings.work"}

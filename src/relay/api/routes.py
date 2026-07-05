@@ -171,6 +171,9 @@ def onboard_tenant(
                 api_key_hash=hash_api_key(api_key),
                 daily_send_cap=body.daily_send_cap,
                 monthly_spend_cap_units=body.monthly_spend_cap_units,
+                sender_from_address=(
+                    str(body.sender_from_address) if body.sender_from_address else None
+                ),
             )
             session.add(tenant)
             session.flush()
@@ -201,6 +204,7 @@ def onboard_tenant(
                 campaign_id=campaign.id,
                 daily_send_cap=body.daily_send_cap,
                 monthly_spend_cap_units=body.monthly_spend_cap_units,
+                sender_from_address=tenant.sender_from_address,
             )
     except IntegrityError as exc:
         raise HTTPException(

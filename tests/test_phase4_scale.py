@@ -174,3 +174,35 @@ def test_tenant_economics_reports_cost_per_meeting_and_headroom(tenant_a, factor
     assert report.spend_cap_remaining_units == pytest.approx(
         1_000 - report.cost_units_30d
     )
+
+
+# ── Exit gate: throughput under concurrent multi-tenant load ────────────────
+
+
+def test_concurrent_worker_drains_multiple_tenants_in_one_pass(
+    tenant_a, tenant_b, factory_a, factory_b
+):
+    """The scaled worker (tenants in parallel threads) drains a mixed
+    multi-tenant queue in a single pass with the same semantics as the
+    serial worker: per-tenant FIFO, per-job transactions, exact
+    isolation afterwards."""
+    ta, _ = tenant_a
+    tb, _ = tenant_b
+    cohorts = {ta: [], tb: []}
+    for tenant_id, factory in ((ta, factory_a), (tb, factory_b)):
+        for _ in range(4):
+            lead_id = factory.lead()
+            run_to_approval(tenant_id, lead_id)
+            approve_current_draft(tenant_id, lead_id)
+            outcome = PipelineRunner(tenant_id, lead_id=lead_id).run()
+            assert outcome.stopped_on == "waiting_worker", outcome
+            cohorts[tenant_id].append(lead_id)
+
+    stats = process_pending(max_jobs=10, concurrency=4)
+    assert stats.sent == 8 and stats.failed == 0 and stats.blocked == 0
+
+    for tenant_id, own_leads in cohorts.items():
+        with tenant_session(tenant_id) as session:
+            states = dict(session.execute(select(Lead.id, Lead.state)).all())
+            assert set(states) == set(own_leads)
+            assert all(s == "sent" for s in states.values())

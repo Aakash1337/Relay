@@ -11,7 +11,14 @@ log = get_logger(__name__)
 class SimulatedSender:
     name = "simulated"
 
-    def send(self, *, job: SendJob, draft: OutreachDraft, lead: Lead) -> str:
+    def send(
+        self,
+        *,
+        job: SendJob,
+        draft: OutreachDraft,
+        lead: Lead,
+        sender_identity: str | None = None,
+    ) -> str:
         message_id = f"simulated-{job.id}"
         log.info(
             "simulated send executed",

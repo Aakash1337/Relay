@@ -70,7 +70,14 @@ class SESSender:
             for candidate in email_hash_candidates(a)
         )
 
-    def send(self, *, job: SendJob, draft: OutreachDraft, lead: Lead) -> str:
+    def send(
+        self,
+        *,
+        job: SendJob,
+        draft: OutreachDraft,
+        lead: Lead,
+        sender_identity: str | None = None,
+    ) -> str:
         # Last-hop cross-check: the address we are about to hand to the
         # provider must hash to the job's frozen recipient identity —
         # under either digest scheme (pepper dual-lookup), since the
@@ -112,8 +119,11 @@ class SESSender:
                 }
             )
 
+        # Phase 4 mailbox/domain ownership: a tenant's own verified
+        # from-address overrides the global default when set. (Identity
+        # VERIFICATION stays a §6 operator attest either way.)
         request: dict[str, Any] = {
-            "FromEmailAddress": self._from_address,
+            "FromEmailAddress": sender_identity or self._from_address,
             "Destination": {"ToAddresses": [lead.email]},
             "Content": {
                 "Simple": {

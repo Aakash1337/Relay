@@ -9,6 +9,8 @@
 -- Phase 4: per-tenant quotas (NULL = fall back to global config).
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS daily_send_cap integer;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS monthly_spend_cap_units numeric(12, 2);
+-- Phase 4: per-tenant sending identity (NULL = global RELAY_SES_FROM).
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS sender_from_address text;
 
 DO $$
 BEGIN

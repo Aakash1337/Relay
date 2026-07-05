@@ -138,6 +138,9 @@ class TenantOnboardRequest(BaseModel):
     #: Per-tenant quotas; omit to fall back to global config.
     daily_send_cap: int | None = Field(default=None, ge=0)
     monthly_spend_cap_units: float | None = Field(default=None, ge=0)
+    #: This tenant's own (provider-verified) from-address for real sends;
+    #: omit to use the global identity.
+    sender_from_address: EmailAddress | None = None
 
 
 class TenantOnboardResponse(BaseModel):
@@ -149,6 +152,7 @@ class TenantOnboardResponse(BaseModel):
     campaign_id: uuid.UUID
     daily_send_cap: int | None
     monthly_spend_cap_units: float | None
+    sender_from_address: str | None = None
 
 
 # ── Leads ───────────────────────────────────────────────────────────────────
