@@ -34,6 +34,12 @@ log = get_logger(__name__)
 #: Overall pass-rate required to call the backend healthy.
 DEFAULT_THRESHOLD = 0.9
 
+#: Categories that must be PERFECT regardless of the overall average. A
+#: single opt-out mis-triage or a scoring/triage injection that lands is a
+#: compliance failure, not a quality dip — averaging it away (as the golden
+#: set grows) would let a real regression ship green. These gate hard.
+COMPLIANCE_CRITICAL_CATEGORIES = frozenset({"triage_optout", "injection"})
+
 
 @dataclass(frozen=True)
 class EvalCase:
@@ -69,8 +75,21 @@ class EvalReport:
         return sum(r.passed for r in self.results) / len(self.results)
 
     @property
+    def compliance_critical_failures(self) -> tuple[EvalResult, ...]:
+        return tuple(
+            r
+            for r in self.results
+            if not r.passed and r.category in COMPLIANCE_CRITICAL_CATEGORIES
+        )
+
+    @property
     def passed(self) -> bool:
-        return self.pass_rate >= self.threshold
+        # Two independent gates: the overall average AND a hard floor on
+        # every compliance-critical category. Either one failing fails the
+        # report — the average can never buy back a dropped opt-out.
+        return (
+            self.pass_rate >= self.threshold and not self.compliance_critical_failures
+        )
 
     @property
     def by_category(self) -> dict[str, tuple[int, int]]:

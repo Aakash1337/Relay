@@ -27,6 +27,14 @@ os.environ.setdefault("RELAY_LOCAL_MODEL", "")
 os.environ.setdefault("RELAY_HOSTED_MODEL", "")
 os.environ.setdefault("RELAY_GOOGLE_API_KEY", "")
 os.environ.setdefault("RELAY_ANTHROPIC_API_KEY", "")
+# Real-send pilot config must never bleed from a developer's .env into the
+# suite: pin the send path OFF and the provider/allowlist empty. Pilot
+# tests set the full config explicitly via monkeypatch, which wins.
+os.environ.setdefault("RELAY_REAL_SEND_ENABLED", "false")
+os.environ.setdefault("RELAY_SENDER_PROVIDER", "none")
+os.environ.setdefault("RELAY_SES_FROM", "")
+os.environ.setdefault("RELAY_PILOT_RECIPIENTS", "")
+os.environ.setdefault("AWS_REGION", "")
 # Retries stay ON in tests (the absorption path is under test) but with
 # near-zero backoff so the suite stays fast. Rate limits are pinned OFF —
 # a developer .env tuned for a real provider's free tier must never

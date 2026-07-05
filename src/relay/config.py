@@ -9,7 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,10 +39,55 @@ class Settings(BaseSettings):
     admin_token: SecretStr | None = None
 
     # ── Send safety ─────────────────────────────────────────────────────────
-    # Phase 0: no real sender exists. This flag is one of several independent
-    # layers (worker check, DB trigger, absent provider integration) that all
-    # must agree before a real send could ever occur.
+    # One of several independent layers (worker check, DB trigger, provider
+    # registry, eligibility attests) that ALL must agree before a real send
+    # can occur. Default false; nothing else matters while it is false.
     real_send_enabled: bool = False
+
+    # ── Real sender (Phase 1C — §6 decision record) ────────────────────────
+    # 'none' keeps real sending structurally absent (the Phase 0 posture).
+    # 'ses' is the pilot sender: SES SANDBOX, self-to-self only. The
+    # Smartlead enrollment adapter is deliberately deferred (see
+    # docs/decisions/sending-provider.md).
+    sender_provider: Literal["none", "ses"] = "none"
+    # Region: read the STANDARD name AWS_REGION (which boto3 also auto-loads)
+    # so there is one source of truth; RELAY_AWS_REGION still accepted.
+    aws_region: str = Field(
+        default="",
+        validation_alias=AliasChoices("AWS_REGION", "RELAY_AWS_REGION"),
+    )
+    # From address: RELAY_SES_FROM is the canonical name; the older
+    # RELAY_SES_FROM_ADDRESS is still accepted.
+    ses_from_address: str = Field(
+        default="",
+        validation_alias=AliasChoices("RELAY_SES_FROM", "RELAY_SES_FROM_ADDRESS"),
+    )
+    ses_configuration_set: str = ""
+    # Pilot recipient allowlist (RELAY_PILOT_RECIPIENTS): comma-separated
+    # addresses that a REAL send may target during the pilot. This is a
+    # structural gate on TOP of test_consent + SES sandbox — real sends go
+    # ONLY to these inboxes (checked in eligibility AND at the last hop).
+    # Empty ⇒ no real send is possible (fail-closed).
+    pilot_recipients: str = ""
+    #: List-Unsubscribe mailto target; required for real-mode eligibility.
+    unsubscribe_mailto: str = ""
+    #: Optional https one-click unsubscribe endpoint (RFC 8058). Only when
+    #: this is set does the sender advertise List-Unsubscribe-Post:
+    #: One-Click — mailto alone cannot honor a one-click POST.
+    unsubscribe_url: str = ""
+    # Operator attestations for the real-mode eligibility checks. Each one
+    # is a recorded human claim ("I verified this"), not a guess by code.
+    sender_identity_approved: bool = False
+    sender_domain_authenticated: bool = False
+    #: Path/anchor of the §6 decision record authorizing the provider.
+    provider_terms_record: str = ""
+    # Volume + reputation caps for the pilot.
+    real_send_daily_cap: int = Field(default=5, ge=0)
+    bounce_complaint_window_days: int = Field(default=7, ge=1)
+    max_bounces_complaints_in_window: int = Field(default=2, ge=0)
+    # SNS event ingestion (webhook token and/or SQS polling).
+    ses_webhook_token: SecretStr | None = None
+    sqs_queue_url: str = ""
 
     # ── Guardrails (dumb limits — the harness, not the planner) ────────────
     max_iterations_default: int = Field(default=100, ge=1)
@@ -124,6 +169,12 @@ class Settings(BaseSettings):
     # ── Tenancy primitives ──────────────────────────────────────────────────
     # Dev default only; production uses a KMS-managed key (Phase 3).
     master_key: SecretStr = SecretStr("dev-master-key-not-for-production")
+
+    def pilot_recipient_addresses(self) -> tuple[str, ...]:
+        """The parsed pilot allowlist (comma-separated, trimmed, no blanks)."""
+        return tuple(
+            addr.strip() for addr in self.pilot_recipients.split(",") if addr.strip()
+        )
 
 
 @lru_cache(maxsize=1)

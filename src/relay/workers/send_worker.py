@@ -160,7 +160,7 @@ def _process_one(tenant_id: uuid.UUID, stats: WorkerStats) -> bool:
             session.flush()
 
             sender = sender_for_mode(job.mode)
-            message_id = sender.send(job=job, draft=draft)
+            message_id = sender.send(job=job, draft=draft, lead=lead)
 
             job.status = "sent"
             job.provider_message_id = message_id
@@ -263,6 +263,12 @@ def _mark_failed(tenant_id: uuid.UUID, job_id: uuid.UUID | None, error: str) -> 
 
 def main() -> None:
     setup_logging()
+    # Make AWS creds in a local .env visible to boto3's credential chain
+    # (real-mode sends only). A no-op when there is no .env or when the
+    # deployment already sets the vars in the environment.
+    from relay.bootstrap import load_local_dotenv
+
+    load_local_dotenv()
     parser = argparse.ArgumentParser(
         description="RELAY internal send worker (never exposed as an API)"
     )

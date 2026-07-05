@@ -402,13 +402,23 @@ BEGIN
   END IF;
 
   -- Phase 1B invariant: a real person's lead is draft-only — no send job
-  -- in ANY mode. The send path for real-data bases opens in Phase 1C
-  -- behind deliverability + provider gates (this branch is what 1C
-  -- amends). Kept in lockstep with vocab.COMPLIANCE_FREE_BASES.
+  -- in ANY mode. Opens only with the production provider work in the §6
+  -- revisit criteria. Kept in lockstep with vocab.COMPLIANCE_FREE_BASES.
   IF v_lead.lawful_basis NOT IN ('synthetic', 'test_consent') THEN
     RAISE EXCEPTION
       'phase 1B: send path is closed for real-data lawful basis %',
       v_lead.lawful_basis
+      USING ERRCODE = 'check_violation';
+  END IF;
+
+  -- Phase 1C pilot rule (§6 record): a REAL send may target only a
+  -- test_consent inbox — an address whose owner explicitly consented to
+  -- receiving test mail (our own). A synthetic (fake-person) lead must
+  -- never produce real email either.
+  IF NEW.mode = 'real' AND v_lead.lawful_basis <> 'test_consent' THEN
+    RAISE EXCEPTION
+      'phase 1C: real sends are restricted to test_consent inboxes '
+      '(lead lawful_basis is %)', v_lead.lawful_basis
       USING ERRCODE = 'check_violation';
   END IF;
 
@@ -521,14 +531,20 @@ BEGIN
         USING ERRCODE = 'check_violation';
     END IF;
 
-    -- Content is frozen the moment a draft is approved, and can never
-    -- change while it stays approved.
-    IF OLD.status = 'approved' AND (
+    -- Content is frozen at approval and can never change afterwards. This
+    -- fires on BOTH the approving transition (NEW.status='approved',
+    -- OLD.status='pending_approval') and any later update while approved --
+    -- so a single UPDATE cannot flip status to 'approved' AND swap in
+    -- unreviewed body/subject text in the same statement (which would make
+    -- the human gate bless text no human saw). Legitimate approval only
+    -- changes status + approver metadata; a human EDIT goes through a new
+    -- draft version (approved_with_edits), never by mutating this row's
+    -- content on the approving write.
+    IF (NEW.status = 'approved' OR OLD.status = 'approved') AND (
          NEW.subject IS DISTINCT FROM OLD.subject
       OR NEW.body IS DISTINCT FROM OLD.body
-      OR NEW.status IS DISTINCT FROM OLD.status
     ) THEN
-      RAISE EXCEPTION 'an approved draft is immutable (content frozen)'
+      RAISE EXCEPTION 'approved draft content is immutable (frozen at approval)'
         USING ERRCODE = 'check_violation';
     END IF;
 
@@ -756,4 +772,19 @@ AS $$
   SELECT tenant_id FROM send_jobs
   WHERE status = 'sending'
     AND started_at < now() - make_interval(secs => p_stale_seconds)
+$$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- Which tenants have sent to a recipient hash (Phase 1C event ingestion).
+-- Provider webhooks arrive without tenant context; the recipient hash on
+-- the event resolves which tenants' machinery should process it. Only
+-- hashes ever cross this boundary.
+-- ─────────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION fn_tenants_for_recipient_hash(p_hash text)
+RETURNS SETOF uuid
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+  SELECT DISTINCT tenant_id FROM send_jobs
+  WHERE recipient_email_hash = p_hash
 $$;

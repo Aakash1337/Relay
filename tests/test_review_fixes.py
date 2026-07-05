@@ -47,10 +47,35 @@ def test_approved_draft_content_cannot_be_edited(tenant_a, factory_a):
     run_to_approval(tenant_id, lead_id)
     draft_id = approve_current_draft(tenant_id, lead_id)
 
-    with pytest.raises(IntegrityError, match="approved draft is immutable"):  # noqa: SIM117
+    with pytest.raises(IntegrityError, match="content is immutable"):  # noqa: SIM117
         with tenant_session(tenant_id) as session:
             session.execute(
                 text("UPDATE outreach_drafts SET body = 'TAMPERED' WHERE id = :id"),
+                {"id": str(draft_id)},
+            )
+
+
+def test_content_cannot_be_swapped_on_the_approving_update(tenant_a, factory_a):
+    """The human gate blesses a SPECIFIC body. A single UPDATE that flips
+    status to 'approved' AND changes the body in the same statement must be
+    rejected — otherwise the freeze (which only bit once approved) could be
+    bypassed to approve text no human ever saw."""
+    tenant_id, _ = tenant_a
+    lead_id = factory_a.lead()
+    run_to_approval(tenant_id, lead_id)
+    with tenant_session(tenant_id) as session:
+        draft = session.execute(select(OutreachDraft)).scalar_one()
+        draft_id = draft.id
+        assert draft.status == "pending_approval"
+
+    with pytest.raises(IntegrityError, match="content is immutable"):  # noqa: SIM117
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                text(
+                    "UPDATE outreach_drafts SET status = 'approved', "
+                    "approved_by = 'attacker', approved_at = now(), "
+                    "body = 'INJECTED — never reviewed' WHERE id = :id"
+                ),
                 {"id": str(draft_id)},
             )
 
