@@ -570,3 +570,114 @@ def test_one_click_url_carries_a_verifiable_per_job_token(
             lead_id,
             job.id,
         )
+
+
+# ── Phase 3 pacing: temporal limits DEFER, they never block ────────────────
+
+
+def test_hourly_pace_defers_and_later_sends(
+    tenant_a, factory_a, pilot_env, monkeypatch
+):
+    """A paced-out job is deferred — it stays queued and its lead stays in
+    send_queued — and goes out on a later tick once the window clears.
+    Queue-time eligibility is unaffected by pacing."""
+    tenant_id, _ = tenant_a
+    monkeypatch.setenv("RELAY_REAL_SEND_HOURLY_CAP", "1")
+    get_settings.cache_clear()
+
+    first = _pilot_lead(factory_a)
+    _walk_to_queue(tenant_id, first)
+    assert process_pending().sent == 1
+
+    # The second lead QUEUES fine (pacing is execution-time only)…
+    second = _pilot_lead(factory_a)
+    _walk_to_queue(tenant_id, second)
+    # …but execution defers it, leaving the job and lead untouched.
+    stats = process_pending()
+    assert (stats.sent, stats.blocked, stats.deferred) == (0, 0, 1)
+    with tenant_session(tenant_id) as session:
+        lead = session.get(Lead, second)
+        job = session.execute(
+            select(SendJob).where(SendJob.lead_id == second)
+        ).scalar_one()
+        assert job.status == "queued" and lead.state == "send_queued"
+
+    # The hour passes (backdate the first send): the deferred job goes out.
+    with tenant_session(tenant_id) as session:
+        session.execute(
+            text(
+                "UPDATE send_jobs SET started_at = started_at"
+                " - interval '2 hours' WHERE lead_id = :lead"
+            ),
+            {"lead": str(first)},
+        )
+    assert process_pending().sent == 1
+    assert len(pilot_env.requests) == 2
+
+
+def test_min_spacing_defers_back_to_back_sends(
+    tenant_a, factory_a, pilot_env, monkeypatch
+):
+    tenant_id, _ = tenant_a
+    monkeypatch.setenv("RELAY_REAL_SEND_MIN_SPACING_SECONDS", "600")
+    get_settings.cache_clear()
+
+    for lead_id in (_pilot_lead(factory_a), _pilot_lead(factory_a)):
+        _walk_to_queue(tenant_id, lead_id)
+
+    stats = process_pending()
+    assert stats.sent == 1 and stats.deferred == 1
+
+    with tenant_session(tenant_id) as session:
+        session.execute(
+            text(
+                "UPDATE send_jobs SET started_at = started_at"
+                " - interval '11 minutes' WHERE status = 'sent'"
+            )
+        )
+    assert process_pending().sent == 1
+
+
+def test_warmup_ramp_caps_a_young_identity(tenant_a, factory_a, pilot_env, monkeypatch):
+    """Day 0 of warmup allows only warmup_daily_start sends even when the
+    configured daily cap is higher; the block reason names the ramp. A day
+    later the ramp has risen and sending resumes."""
+    tenant_id, _ = tenant_a
+    monkeypatch.setenv("RELAY_WARMUP_DAILY_START", "1")
+    monkeypatch.setenv("RELAY_WARMUP_DAILY_INCREMENT", "5")
+    get_settings.cache_clear()
+
+    first = _pilot_lead(factory_a)
+    _walk_to_queue(tenant_id, first)
+    assert process_pending().sent == 1  # the day-0 allowance
+
+    second = _pilot_lead(factory_a)
+    run_to_approval(tenant_id, second)
+    approve_current_draft(tenant_id, second)
+    from relay.pipeline.runner import PipelineRunner
+
+    outcome = PipelineRunner(tenant_id, lead_id=second).run()
+    assert outcome.final_state == "send_blocked"
+    with tenant_session(tenant_id) as session:
+        from relay.db.models import LeadTransition
+
+        reason = session.execute(
+            select(LeadTransition.reason).where(
+                LeadTransition.lead_id == second,
+                LeadTransition.to_state == "send_blocked",
+            )
+        ).scalar_one()
+        assert "warmup day 0" in (reason or "")
+
+    # A day later: ramp = 1 + 5·1 = 6, so the configured cap (5) rules
+    # again; the first send has also left the 24h window.
+    with tenant_session(tenant_id) as session:
+        session.execute(
+            text(
+                "UPDATE send_jobs SET started_at = started_at"
+                " - interval '25 hours' WHERE status = 'sent'"
+            )
+        )
+    third = _pilot_lead(factory_a)
+    _walk_to_queue(tenant_id, third)
+    assert process_pending().sent == 1

@@ -129,6 +129,7 @@ to change safely.
 | Capability | Where |
 | --- | --- |
 | **One-click unsubscribe (RFC 8058)**: every real send embeds a per-job signed-token URL in its List-Unsubscribe header (beside the mailto). `GET /unsubscribe` renders a confirm page and never mutates state (mail clients and scanners prefetch links); the `POST` honors it idempotently — the lead transitions to `unsubscribed` where the state machine allows, and the do-not-contact suppression entry ALWAYS lands, decoupled, same pattern as bounces. Tokens are HMAC-signed with a per-tenant derived key and carry no PII | `ingest/unsubscribe.py`, `api/routes.py`, `senders/ses.py` |
+| **Deliverability pacing**: per-mailbox rolling-hour cap, minimum spacing between sends, and a warmup ramp that grows the effective daily cap from the tenant's first real send (`min(cap, start + increment·day)`). Pacing is execution-time only and **defers** — a paced-out job stays queued for a later tick, its lead untouched; it is never terminally blocked over a temporal condition. Evaluated under the same per-tenant advisory lock as the daily cap, so racing workers cannot both pass at a pace boundary. All off by default (`RELAY_REAL_SEND_HOURLY_CAP`, `RELAY_REAL_SEND_MIN_SPACING_SECONDS`, `RELAY_WARMUP_DAILY_*`) | `domain/eligibility.py`, `workers/send_worker.py` |
 
 ---
 
