@@ -116,6 +116,45 @@ def rotate_tenant_key(tenant_id: uuid.UUID) -> schemas.TenantKeyRotateResponse:
 
 
 @router.post(
+    "/internal/tenants/{tenant_id}/attest-sender-identity",
+    response_model=schemas.TenantSenderAttestResponse,
+    dependencies=[Depends(require_admin)],
+)
+def attest_sender_identity(
+    tenant_id: uuid.UUID,
+) -> schemas.TenantSenderAttestResponse:
+    """Record the operator attest that this tenant's sender_from_address
+    is provider-verified (Phase 4). Until attested, real sends for a
+    tenant with its own address are blocked at eligibility — before the
+    provider can reject the unverified From into terminal failures."""
+    with admin_session() as session:
+        tenant = session.get(Tenant, tenant_id)
+        if tenant is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "tenant not found")
+        if tenant.sender_from_address is None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "tenant has no sender_from_address to attest",
+            )
+        tenant.sender_identity_verified = True
+        audit.record(
+            session,
+            tenant_id=tenant_id,
+            actor_type="human",
+            actor_id="admin",
+            action="tenant.attest_sender_identity",
+            entity_type="tenant",
+            entity_id=str(tenant_id),
+            payload={"verified": True},
+        )
+        return schemas.TenantSenderAttestResponse(
+            id=tenant_id,
+            sender_from_address=tenant.sender_from_address,
+            sender_identity_verified=True,
+        )
+
+
+@router.post(
     "/internal/suppression/global",
     response_model=schemas.GlobalSuppressionResponse,
     dependencies=[Depends(require_admin)],
@@ -171,6 +210,9 @@ def onboard_tenant(
                 api_key_hash=hash_api_key(api_key),
                 daily_send_cap=body.daily_send_cap,
                 monthly_spend_cap_units=body.monthly_spend_cap_units,
+                sender_from_address=(
+                    str(body.sender_from_address) if body.sender_from_address else None
+                ),
             )
             session.add(tenant)
             session.flush()
@@ -201,6 +243,7 @@ def onboard_tenant(
                 campaign_id=campaign.id,
                 daily_send_cap=body.daily_send_cap,
                 monthly_spend_cap_units=body.monthly_spend_cap_units,
+                sender_from_address=tenant.sender_from_address,
             )
     except IntegrityError as exc:
         raise HTTPException(

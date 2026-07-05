@@ -105,6 +105,16 @@ class Tenant(Base):
     #: Rolling-30-day guardrail-unit spend ceiling: at/over it, NEW pipeline
     #: runs refuse to start (in-flight runs finish under their own budget).
     monthly_spend_cap_units: Mapped[float | None] = mapped_column(Numeric(12, 2))
+    #: Phase 4 mailbox/domain ownership: this tenant's own from-address for
+    #: real sends (must be provider-verified); NULL = the global identity.
+    sender_from_address: Mapped[str | None] = mapped_column(Text)
+    #: Operator attest that sender_from_address is provider-verified (SES
+    #: console). Without it, real sends for a tenant with its own address
+    #: are blocked at eligibility — BEFORE the provider can reject them
+    #: into terminal failures.
+    sender_identity_verified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
     created_at: Mapped[datetime] = _created_at()
 
 

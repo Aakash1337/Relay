@@ -183,6 +183,9 @@ def evaluate(
     # guess by code; the caps are computed live from the datastore.
     if mode == "real":
         settings = get_settings()
+        # The tenant row carries the Phase 4 quotas and sending identity
+        # (RLS: a tenant can read its own row).
+        tenant_row = session.get(Tenant, lead.tenant_id)
         check(
             "real_send_enabled",
             settings.real_send_enabled,
@@ -234,6 +237,18 @@ def evaluate(
             settings.sender_domain_authenticated,
             "SPF/DKIM/DMARC attest missing (RELAY_SENDER_DOMAIN_AUTHENTICATED)",
         )
+        # Phase 4: a tenant sending as its OWN address needs that identity
+        # attested provider-verified — otherwise the provider rejects the
+        # unverified From at send time and every approved lead lands in
+        # terminal failure. Blocked here instead, before any provider call.
+        check(
+            "tenant_sender_identity_verified",
+            tenant_row is None
+            or tenant_row.sender_from_address is None
+            or tenant_row.sender_identity_verified,
+            "tenant sender_from_address is set but not attested verified "
+            "(POST /internal/tenants/{id}/attest-sender-identity)",
+        )
         # Race-proofing: a worker's in-flight claim ('sending') is invisible
         # to other transactions until commit, so a plain count lets N
         # concurrent workers all pass at cap−1. This per-tenant advisory
@@ -263,8 +278,7 @@ def evaluate(
             )
         ).scalar_one()
         # Per-tenant quota (Phase 4): a tenant's daily_send_cap overrides
-        # the global config when set (RLS: a tenant can read its own row).
-        tenant_row = session.get(Tenant, lead.tenant_id)
+        # the global config when set.
         configured_cap = settings.real_send_daily_cap
         cap_source = "config"
         if tenant_row is not None and tenant_row.daily_send_cap is not None:

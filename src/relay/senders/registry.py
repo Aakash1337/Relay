@@ -9,6 +9,8 @@ structurally absent exactly as in Phase 0.
 
 from __future__ import annotations
 
+import threading
+
 from relay.config import get_settings
 from relay.logs import get_logger
 from relay.senders.base import DirectSender, RealSendUnavailable
@@ -17,6 +19,11 @@ from relay.senders.simulated import SimulatedSender
 log = get_logger(__name__)
 
 _cache: dict[str, DirectSender] = {}
+#: Construction is guarded: concurrent worker threads must not both build
+#: a provider client (boto3 client creation on the shared default session
+#: is not thread-safe), and a failure mid-construction must not poison
+#: the cache.
+_cache_lock = threading.Lock()
 
 
 def sender_for_mode(mode: str) -> DirectSender:
@@ -38,21 +45,24 @@ def sender_for_mode(mode: str) -> DirectSender:
         )
     cached = _cache.get(provider)
     if cached is None:
-        if provider == "ses":
-            # The Smartlead enrollment adapter is deliberately deferred
-            # (§6 record) and will NOT appear here: enrollment providers
-            # get their own registry when built, because they change the
-            # send moment.
-            from relay.senders.ses import SESSender
+        with _cache_lock:
+            cached = _cache.get(provider)  # double-checked under the lock
+            if cached is None:
+                if provider == "ses":
+                    # The Smartlead enrollment adapter is deliberately
+                    # deferred (§6 record) and will NOT appear here:
+                    # enrollment providers get their own registry when
+                    # built, because they change the send moment.
+                    from relay.senders.ses import SESSender
 
-            cached = SESSender()
-        else:
-            # Fail loudly on a provider the Literal was extended to allow
-            # but this registry was never taught to build — never silently
-            # fall through to some other provider.
-            raise RealSendUnavailable(f"unhandled sender provider {provider!r}")
-        _cache[provider] = cached
-        log.info("real sender ready", provider=provider)
+                    cached = SESSender()
+                else:
+                    # Fail loudly on a provider the Literal was extended
+                    # to allow but this registry was never taught to
+                    # build — never silently fall through to another.
+                    raise RealSendUnavailable(f"unhandled sender provider {provider!r}")
+                _cache[provider] = cached
+                log.info("real sender ready", provider=provider)
     return cached
 
 

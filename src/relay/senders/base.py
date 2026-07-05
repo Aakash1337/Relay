@@ -23,8 +23,20 @@ class DirectSender(Protocol):
 
     name: str
 
-    def send(self, *, job: SendJob, draft: OutreachDraft, lead: Lead) -> str:
-        """Execute one send; return the provider message id."""
+    def send(
+        self,
+        *,
+        job: SendJob,
+        draft: OutreachDraft,
+        lead: Lead,
+        sender_identity: str | None = None,
+    ) -> str:
+        """Execute one send; return the provider message id.
+
+        ``sender_identity`` is the tenant's own from-address (Phase 4
+        mailbox/domain ownership) — None falls back to the provider's
+        globally configured identity.
+        """
         ...  # pragma: no cover
 
 

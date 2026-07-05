@@ -174,3 +174,110 @@ def test_tenant_economics_reports_cost_per_meeting_and_headroom(tenant_a, factor
     assert report.spend_cap_remaining_units == pytest.approx(
         1_000 - report.cost_units_30d
     )
+
+
+# ── Exit gate: throughput under concurrent multi-tenant load ────────────────
+
+
+def test_concurrent_worker_drains_multiple_tenants_in_one_pass(
+    tenant_a, tenant_b, factory_a, factory_b
+):
+    """The scaled worker (tenants in parallel threads) drains a mixed
+    multi-tenant queue in a single pass with the same semantics as the
+    serial worker: per-tenant FIFO, per-job transactions, exact
+    isolation afterwards."""
+    ta, _ = tenant_a
+    tb, _ = tenant_b
+    cohorts = {ta: [], tb: []}
+    for tenant_id, factory in ((ta, factory_a), (tb, factory_b)):
+        for _ in range(4):
+            lead_id = factory.lead()
+            run_to_approval(tenant_id, lead_id)
+            approve_current_draft(tenant_id, lead_id)
+            outcome = PipelineRunner(tenant_id, lead_id=lead_id).run()
+            assert outcome.stopped_on == "waiting_worker", outcome
+            cohorts[tenant_id].append(lead_id)
+
+    stats = process_pending(max_jobs=10, concurrency=4)
+    assert stats.sent == 8 and stats.failed == 0 and stats.blocked == 0
+
+    for tenant_id, own_leads in cohorts.items():
+        with tenant_session(tenant_id) as session:
+            states = dict(session.execute(select(Lead.id, Lead.state)).all())
+            assert set(states) == set(own_leads)
+            assert all(s == "sent" for s in states.values())
+
+
+def test_attest_sender_identity_endpoint(client):
+    onboarded = client.post(
+        "/internal/tenants/onboard",
+        headers=ADMIN,
+        json={
+            "name": f"attest-{uuid.uuid4().hex[:8]}",
+            "source": {
+                "name": "seed",
+                "source_type": "seed",
+                "terms_allow_use": "yes",
+            },
+            "campaign": {"name": "c1"},
+            "sender_from_address": "client-a@example.test",
+        },
+    ).json()
+    assert onboarded["sender_identity_verified"] is False
+
+    response = client.post(
+        f"/internal/tenants/{onboarded['tenant_id']}/attest-sender-identity",
+        headers=ADMIN,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["sender_identity_verified"] is True
+
+    # No address to attest -> 409; unknown tenant -> 404.
+    bare = client.post(
+        "/tenants",
+        headers=ADMIN,
+        json={"name": f"bare-{uuid.uuid4().hex[:8]}"},
+    ).json()
+    assert (
+        client.post(
+            f"/internal/tenants/{bare['id']}/attest-sender-identity",
+            headers=ADMIN,
+        ).status_code
+        == 409
+    )
+    assert (
+        client.post(
+            f"/internal/tenants/{uuid.uuid4()}/attest-sender-identity",
+            headers=ADMIN,
+        ).status_code
+        == 404
+    )
+
+
+def test_worker_pass_budget_is_global_across_tenants(
+    tenant_a, tenant_b, factory_a, factory_b
+):
+    """max_jobs bounds the WHOLE pass, not each tenant: 2 tenants with 2
+    queued jobs each and max_jobs=3 process exactly 3, leaving 1 queued."""
+    ta, _ = tenant_a
+    tb, _ = tenant_b
+    for tenant_id, factory in ((ta, factory_a), (tb, factory_b)):
+        for _ in range(2):
+            lead_id = factory.lead()
+            run_to_approval(tenant_id, lead_id)
+            approve_current_draft(tenant_id, lead_id)
+            outcome = PipelineRunner(tenant_id, lead_id=lead_id).run()
+            assert outcome.stopped_on == "waiting_worker", outcome
+
+    stats = process_pending(max_jobs=3, concurrency=2)
+    assert stats.processed == 3
+
+    remaining = 0
+    for tenant_id in (ta, tb):
+        with tenant_session(tenant_id) as session:
+            remaining += len(
+                session.execute(select(SendJob).where(SendJob.status == "queued"))
+                .scalars()
+                .all()
+            )
+    assert remaining == 1
