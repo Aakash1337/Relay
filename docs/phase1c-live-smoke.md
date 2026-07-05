@@ -61,3 +61,38 @@ RELAY_SQS_QUEUE_URL=…
 Exit gate (§ roadmap): a handful of real, eligible, approved,
 non-duplicate sends through the approved provider; suppression and
 unsubscribe verified end to end; every send audited.
+
+## Live smoke results (2026-07-05, us-east-2, identity testings.work)
+
+Executed against the real SES sandbox with the operator's IAM user
+(`relay-ses-pilot`) and the `relay-ses-events` SNS→SQS transport. All
+sends were human-approved; the operator confirmed receipt in both
+inboxes. `.env` kept `RELAY_REAL_SEND_ENABLED=false` at rest throughout;
+the switch was enabled only in the sending process's environment.
+
+| # | Recipient | Result | SES message id |
+|---|-----------|--------|----------------|
+| 1 | operator Gmail (allowlisted, test_consent) | delivered, receipt confirmed | `010f019f305a612d-…-000000` |
+| 2 | operator work inbox (allowlisted, test_consent) | delivered, receipt confirmed | `010f019f30604dba-…-000000` |
+| 3 | `bounce@simulator.amazonses.com` | hard bounce (by design) | `010f019f307d636a-…-000000` |
+
+Verified live, on the real code paths (no fakes anywhere):
+
+- **Gates**: with the master switch off, a fully configured, approved
+  lead failed eligibility on exactly `real_send_enabled` +
+  `sender_configured` — both tracing to the single switch.
+- **Fit gate**: a bare-email lead and an implausible persona were both
+  `scored_rejected` by the live scorer before ever reaching drafting.
+- **Bounce round trip**: the real SNS envelope from the queue passed
+  signature verification against the AWS signing certificate; the lead
+  transitioned to `bounce_received` and a `hard_bounce` suppression row
+  was written in the same transaction.
+- **Resend blocked three ways**: a would-be resend to the bounced
+  address failed `not_suppressed`, `idempotency_key_unused`, and (with
+  the cap set to the day's send count) `mailbox_active_below_cap`.
+- **Audit**: every send carries `draft.approve` (human) →
+  `lead.transition` → `send.executed` (worker) with the provider
+  message id on the job row.
+
+Remaining for a future pass: visual check of the List-Unsubscribe
+header in the received messages (operator-side, Gmail "Show original").
