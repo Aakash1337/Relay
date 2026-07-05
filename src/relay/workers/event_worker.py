@@ -75,6 +75,10 @@ def poll_once(*, client: Any | None = None, max_messages: int = 10) -> PollStats
 
 def main() -> None:
     setup_logging()
+    # Make AWS creds in a local .env visible to boto3's credential chain.
+    from relay.bootstrap import load_local_dotenv
+
+    load_local_dotenv()
     parser = argparse.ArgumentParser(description="RELAY SES/SNS event poller")
     parser.add_argument("--max-messages", type=int, default=10)
     args = parser.parse_args()

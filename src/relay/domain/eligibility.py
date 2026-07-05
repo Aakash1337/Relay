@@ -32,6 +32,7 @@ from relay.domain.vocab import (
     SIMULATED_SAFE_BASES,
     LawfulBasis,
 )
+from relay.hashing import hash_email
 from relay.logs import get_logger
 from relay.senders import real_sender_status
 
@@ -173,6 +174,19 @@ def evaluate(
             lead.lawful_basis == str(LawfulBasis.TEST_CONSENT),
             f"1C pilot sends only to test_consent inboxes "
             f"(lawful_basis={lead.lawful_basis})",
+        )
+        # §6 pilot allowlist: a REAL send may target ONLY an address on
+        # RELAY_PILOT_RECIPIENTS (our own verified inboxes). This is an
+        # explicit structural gate on top of test_consent + the SES sandbox,
+        # fail-closed: an empty allowlist means no real send is possible.
+        # Re-checked at the last hop by the sender.
+        allowlist = {hash_email(addr) for addr in settings.pilot_recipient_addresses()}
+        check(
+            "recipient_on_pilot_allowlist",
+            lead.email_hash in allowlist,
+            "recipient not on RELAY_PILOT_RECIPIENTS allowlist"
+            if allowlist
+            else "RELAY_PILOT_RECIPIENTS is empty (no real send allowed)",
         )
         # Provider-neutral: is a real sender actually configured and
         # constructible (provider set + its required settings present)?

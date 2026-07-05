@@ -263,6 +263,12 @@ def _mark_failed(tenant_id: uuid.UUID, job_id: uuid.UUID | None, error: str) -> 
 
 def main() -> None:
     setup_logging()
+    # Make AWS creds in a local .env visible to boto3's credential chain
+    # (real-mode sends only). A no-op when there is no .env or when the
+    # deployment already sets the vars in the environment.
+    from relay.bootstrap import load_local_dotenv
+
+    load_local_dotenv()
     parser = argparse.ArgumentParser(
         description="RELAY internal send worker (never exposed as an API)"
     )

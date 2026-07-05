@@ -24,11 +24,18 @@ from tests.conftest import approve_current_draft, run_to_approval
 
 pytestmark = pytest.mark.exit_gate
 
+#: The one verified pilot inbox — fixed so it can sit on the allowlist.
+_PILOT_INBOX = "pilot-inbox@example.test"
+
 _PILOT_ENV = {
     "RELAY_REAL_SEND_ENABLED": "true",
     "RELAY_SENDER_PROVIDER": "ses",
-    "RELAY_AWS_REGION": "eu-central-1",
-    "RELAY_SES_FROM_ADDRESS": "pilot@testings.work",
+    # Canonical operator-facing names (aliases): AWS_REGION is boto3's own
+    # var; RELAY_SES_FROM is the from address; RELAY_PILOT_RECIPIENTS is the
+    # allowlist. That these drive the gate proves the aliases are wired.
+    "AWS_REGION": "us-east-2",
+    "RELAY_SES_FROM": "pilot@testings.work",
+    "RELAY_PILOT_RECIPIENTS": _PILOT_INBOX,
     "RELAY_SENDER_IDENTITY_APPROVED": "true",
     "RELAY_SENDER_DOMAIN_AUTHENTICATED": "true",
     "RELAY_UNSUBSCRIBE_MAILTO": "unsubscribe@testings.work",
@@ -69,7 +76,7 @@ def _pilot_lead(factory, **overrides) -> uuid.UUID:
         "campaign_id": campaign_id,
         "dry_run": False,
         "lawful_basis": "test_consent",
-        "email": f"ourbox-{uuid.uuid4().hex[:6]}@example.test",
+        "email": _PILOT_INBOX,  # on the allowlist by default
     }
     defaults.update(overrides)
     return factory.lead(**defaults)
@@ -94,9 +101,9 @@ def test_simulated_mode_never_gets_a_real_provider(pilot_env):
 
 
 def test_ses_sender_requires_configuration(monkeypatch):
-    monkeypatch.setenv("RELAY_SES_FROM_ADDRESS", "")
+    monkeypatch.setenv("RELAY_SES_FROM", "")
     get_settings.cache_clear()
-    with pytest.raises(RealSendUnavailable, match="RELAY_SES_FROM_ADDRESS"):
+    with pytest.raises(RealSendUnavailable, match="RELAY_SES_FROM"):
         SESSender(client=FakeSES())
     get_settings.cache_clear()
 
@@ -166,7 +173,10 @@ def test_one_click_only_with_https_url(tenant_a, factory_a, pilot_env, monkeypat
         ("RELAY_PROVIDER_TERMS_RECORD", "provider_terms_allow"),
         # Provider-neutral readiness: a half-configured SES (no region)
         # must be caught at the gate, not stranded in error_terminal later.
-        ("RELAY_AWS_REGION", "sender_configured"),
+        ("AWS_REGION", "sender_configured"),
+        # Fail-closed allowlist: an empty RELAY_PILOT_RECIPIENTS blocks
+        # every real send.
+        ("RELAY_PILOT_RECIPIENTS", "recipient_on_pilot_allowlist"),
     ],
 )
 def test_each_missing_attest_blocks_the_send(
@@ -175,7 +185,11 @@ def test_each_missing_attest_blocks_the_send(
     """The real-mode checklist is a conjunction: remove any single attest
     and the lead lands in send_blocked naming that exact check."""
     tenant_id, _ = tenant_a
-    off = "" if missing.endswith(("MAILTO", "RECORD", "REGION")) else "false"
+    off = (
+        ""
+        if missing.endswith(("MAILTO", "RECORD", "REGION", "RECIPIENTS"))
+        else "false"
+    )
     monkeypatch.setenv(missing, off)
     get_settings.cache_clear()
 
@@ -345,3 +359,89 @@ def test_provider_exception_marks_job_failed_never_sent(tenant_a, factory_a, pil
         assert job.status == "failed"  # not 'sent'
         assert job.provider_message_id is None
         assert lead is not None and lead.state == "error_terminal"
+
+
+def test_recipient_off_the_allowlist_is_blocked(tenant_a, factory_a, pilot_env):
+    """A test_consent lead whose address is NOT on RELAY_PILOT_RECIPIENTS
+    cannot be sent to — the allowlist is a structural gate, not advice."""
+    tenant_id, _ = tenant_a
+    lead_id = _pilot_lead(factory_a, email="not-my-inbox@example.test")
+    run_to_approval(tenant_id, lead_id)
+    approve_current_draft(tenant_id, lead_id)
+    from relay.pipeline.runner import PipelineRunner
+
+    outcome = PipelineRunner(tenant_id, lead_id=lead_id).run()
+    assert outcome.final_state == "send_blocked"
+    assert pilot_env.requests == []
+
+
+def test_real_person_lead_cannot_enter_the_pilot_send_set(
+    tenant_a, factory_a, pilot_env
+):
+    """The design invariant: the Phase 1B draft-only rule holds THROUGH the
+    pilot. A real-person (legitimate_interest) lead — even one lawfully
+    ingested behind an approved preflight, even listed on the pilot
+    allowlist — can never be selected for a real send, in code OR at the
+    DB trigger. Only test_consent (our own inboxes) reaches the send set."""
+    tenant_id, _ = tenant_a
+    from datetime import UTC, datetime, timedelta
+
+    from relay.domain import preflight
+
+    preflight.approve(
+        tenant_id,
+        artifact_sha256="a" * 64,
+        approved_by="compliance",
+        artifact_ref="docs/legal-data-preflight.md@test",
+    )
+    campaign_id = factory_a.campaign(dry_run=False, simulated_replies=False)
+    lead_id = factory_a.lead(
+        campaign_id=campaign_id,
+        dry_run=False,
+        lawful_basis="legitimate_interest",
+        region_assumption="us-b2b",
+        retention_until=datetime.now(tz=UTC) + timedelta(days=90),
+        email="real.person@northwind-corp.com",
+    )
+
+    # Code layer: the pipeline never queues a send — real-data leads are
+    # draft-only, so it stops at the human gate and cannot pass eligibility.
+    run_to_approval(tenant_id, lead_id)
+    approve_current_draft(tenant_id, lead_id)
+    from relay.pipeline.runner import PipelineRunner
+
+    outcome = PipelineRunner(tenant_id, lead_id=lead_id).run()
+    assert outcome.final_state == "send_blocked"
+    with tenant_session(tenant_id) as session:
+        assert session.execute(select(SendJob)).scalars().all() == []
+    assert pilot_env.requests == []
+
+    # DB layer: even a raw-SQL real job for this lead is rejected outright.
+    with tenant_session(tenant_id) as session:
+        lead = session.get(Lead, lead_id)
+        params = {
+            "tenant": str(tenant_id),
+            "campaign": str(lead.campaign_id),
+            "lead": str(lead_id),
+            "draft": str(uuid.uuid4()),
+            "key": f"raw-{uuid.uuid4().hex}",
+            "hash": lead.email_hash,
+            "domain": lead.email_domain,
+        }
+    # Rejected by the DB backstop — for a real-data basis the Phase 1B
+    # "send path closed" guard fires first (an even stronger rejection than
+    # the 1C test_consent rule); either way no real job can exist.
+    with pytest.raises(  # noqa: SIM117
+        IntegrityError, match="send path is closed|test_consent"
+    ):
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                text(
+                    "INSERT INTO send_jobs (tenant_id, campaign_id, lead_id,"
+                    " draft_id, sequence_step, message_version,"
+                    " idempotency_key, mode, recipient_email_hash,"
+                    " recipient_domain) VALUES (:tenant, :campaign, :lead,"
+                    " :draft, 1, 1, :key, 'real', :hash, :domain)"
+                ),
+                params,
+            )

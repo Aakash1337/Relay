@@ -37,9 +37,9 @@ class SESSender:
         the registry instead of reading SES-specific settings directly."""
         settings = get_settings()
         if not settings.ses_from_address:
-            return "RELAY_SES_FROM_ADDRESS not set"
+            return "RELAY_SES_FROM not set"
         if not settings.aws_region:
-            return "RELAY_AWS_REGION not set"
+            return "AWS_REGION not set"
         return None
 
     def __init__(self, *, client: Any | None = None) -> None:
@@ -48,12 +48,12 @@ class SESSender:
         # an injected client; region is only needed to build the real one.
         if not settings.ses_from_address:
             raise RealSendUnavailable(
-                "RELAY_SES_FROM_ADDRESS must be set to use the ses sender"
+                "RELAY_SES_FROM must be set to use the ses sender"
             )
         if client is None:
             if not settings.aws_region:
                 raise RealSendUnavailable(
-                    "RELAY_AWS_REGION must be set to use the ses sender"
+                    "AWS_REGION must be set to use the ses sender"
                 )
             import boto3  # deferred: not needed when the sender is unused
 
@@ -63,6 +63,9 @@ class SESSender:
         self._configuration_set = settings.ses_configuration_set
         self._unsubscribe_mailto = settings.unsubscribe_mailto
         self._unsubscribe_url = settings.unsubscribe_url
+        self._allowlist = frozenset(
+            hash_email(a) for a in settings.pilot_recipient_addresses()
+        )
 
     def send(self, *, job: SendJob, draft: OutreachDraft, lead: Lead) -> str:
         # Last-hop cross-check: the address we are about to hand to the
@@ -71,6 +74,14 @@ class SESSender:
             raise RealSendUnavailable(
                 "refusing send: lead address does not match the job's "
                 "frozen recipient hash"
+            )
+        # Last-hop backstop of the §6 pilot allowlist (also gated in
+        # eligibility): a real send may leave only for an allowlisted inbox.
+        # Fail-closed — an empty allowlist refuses every real send.
+        if job.recipient_email_hash not in self._allowlist:
+            raise RealSendUnavailable(
+                "refusing send: recipient is not on the pilot allowlist "
+                "(RELAY_PILOT_RECIPIENTS)"
             )
 
         # List-Unsubscribe can carry a mailto and/or an https URL. RFC 8058
