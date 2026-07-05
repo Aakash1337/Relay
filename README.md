@@ -38,7 +38,7 @@ structurally closed for it until Phase 1C.
 | Guardrail harness: max-iteration counter, per-run budget ceiling, kills persisted to `pipeline_runs` | `src/relay/guardrails/harness.py` |
 | Task-routing seam (§8), stubbed: local vs hosted per task type; tool-calling never routes local | `src/relay/routing/` |
 | Structured JSON logging with in-process PII redaction (emails → suppression-compatible hashes) | `src/relay/logs.py` |
-| Hard `dry_run` flag on leads **and** campaigns — immutable, DB-enforced, and `RealSender` cannot even be constructed in Phase 0 | `src/relay/senders.py`, `fn_send_jobs_guard` |
+| Hard `dry_run` flag on leads **and** campaigns — immutable, DB-enforced; in Phase 0 no real sender could even be constructed (one exists since 1C, strictly behind the §6 gates) | `src/relay/senders/`, `fn_send_jobs_guard` |
 | Backend API skeleton + health check; n8n spine workflow calling it | `src/relay/api/`, `infra/n8n/relay-spine.json` |
 | Tenancy primitives: per-tenant key derivation, vector-store namespaces | `src/relay/tenancy.py`, `src/relay/hashing.py` |
 
@@ -100,7 +100,7 @@ The first real emails — SES **sandbox**, self-to-self only, per the §6
 | --- | --- |
 | **Provider seam** with the two operational shapes from §6: `DirectSender` (SES, implemented) and `EnrollmentSender` (Smartlead — interface + idempotency-boundary contract only; the adapter is deliberately deferred to real-prospect production). Config-selected via `RELAY_SENDER_PROVIDER`; default `none` keeps real sending structurally absent | `src/relay/senders/` |
 | **SES adapter**: SESv2 direct send with List-Unsubscribe/One-Click headers and a last-hop cross-check that the recipient hashes to the job's frozen identity | `senders/ses.py` |
-| **Real-mode eligibility, for real**: the seven checks are now config attests + live data — identity attest, domain-auth attest, daily volume cap, bounce/complaint reputation window, unsubscribe target, §6 record reference. Real sends are `test_consent`-only (our own inboxes), in code AND in the send-jobs trigger | `domain/eligibility.py`, `fn_send_jobs_guard` |
+| **Real-mode eligibility, for real**: on top of the seven always-on integrity checks, real mode adds ten more — master switch, `test_consent` basis, pilot allowlist, sender configured, identity attest, domain-auth attest, daily volume cap (race-proof via a per-tenant advisory lock), bounce/complaint reputation window, unsubscribe target, §6 record reference. Real sends are `test_consent`-only (our own inboxes), in code AND in the send-jobs trigger | `domain/eligibility.py`, `fn_send_jobs_guard` |
 | **SES event ingestion**: SNS envelopes, signature-verified against the AWS signing cert, via HTTPS webhook (`/webhooks/ses?token=…`) or SQS polling (`just events`) — hard bounces transition the lead and auto-suppress in one transaction; complaints suppress once; everything idempotent under provider redelivery | `src/relay/ingest/`, `workers/event_worker.py` |
 | **Live smoke checklist** for when AWS credentials/DNS land | `docs/phase1c-live-smoke.md` |
 
@@ -203,14 +203,17 @@ limits that work when the intelligent component is the thing that
 broke). Anything that would leave the machine passes two independent
 gates: a **human approves the exact message version**, and the
 **send-eligibility gate** re-checks lawfulness, suppression, and
-idempotency at execution time. In Phase 0 the executor is a simulated
-sender; a real one does not exist yet, by design.
+idempotency at execution time. Simulated jobs always use the simulated
+sender — that pairing is not configurable; the real executor (SES
+sandbox, Phase 1C) exists only behind the §6 pilot gates.
 
 Safety posture, layered (all must fail together for a bad send):
 campaign/lead `dry_run` defaults (immutable) → DB trigger rejecting
 real jobs for dry-run chains → eligibility gate failing real mode on
-seven checks → `RELAY_REAL_SEND_ENABLED=false` → `RealSender` raising on
-construction.
+ten checks (incl. the pilot allowlist and daily cap) →
+`RELAY_REAL_SEND_ENABLED=false` master switch → the sender's last-hop
+recipient-hash and allowlist refusal → SES sandbox itself (AWS refuses
+unverified recipients).
 
 ## Configuration
 
@@ -245,17 +248,24 @@ RLS context.
 
 ```
 src/relay/
-  api/          FastAPI boundary (schemas, tenant auth, routes)
-  db/           engines/sessions, ORM models, migrations, SQL (triggers, RLS)
-  domain/       states, state machine, suppression, eligibility, approval
-  guardrails/   the harness: iteration cap, budget ceiling
-  pipeline/     the Phase 0 runner (stubbed steps, real control flow)
-  routing/      task→tier routing seam + stub executors
-  workers/      the internal-only send worker
-  config.py, logs.py, hashing.py, tenancy.py, audit.py, senders.py
-tests/          exit-gate suite (runs against real Postgres)
-infra/n8n/      the spine workflow (import into n8n)
-scripts/        demo_journey.py, dev_pg.sh
+  api/            FastAPI boundary (schemas, tenant auth, routes, review/ops UIs)
+  compute/        provider-agnostic LLM backends behind the routing seam
+  crm/            one-way CRM mirror seam (never on the send path)
+  db/             engines/sessions, ORM models, migrations, SQL (triggers, RLS)
+  domain/         states, state machine, suppression, eligibility, approval, DSR
+  evals/          golden-set invariants for the configured backends
+  guardrails/     the harness: iteration cap, budget ceiling
+  ingest/         SES/SNS event ingestion (signature-verified)
+  observability/  metrics + alert rules, derived on read
+  pipeline/       the runner: real data flow, resumability, crash recovery
+  routing/        task→tier routing seam
+  senders/        provider seam: simulated + SES (real senders behind §6 gates)
+  synthetic/      seeded Faker prospects incl. adversarial edge cases
+  workers/        internal-only workers: send, SES event poller, retention
+  config.py, logs.py, hashing.py, tenancy.py, audit.py, economics.py, ...
+tests/            exit-gate suite (runs against real Postgres)
+infra/n8n/        the spine workflow (import into n8n)
+scripts/          demo_journey.py, seed_synthetic.py, run_evals.py, dev_pg.sh
 ```
 
 ## Development
@@ -266,11 +276,12 @@ CI (GitHub Actions) runs ruff + the full test suite against a Postgres
 
 ## What comes next (roadmap)
 
-- **Phase 1B** — real data, no sending. Blocked by the Legal/Data
-  Preflight artifact (jurisdiction matrix, controller/processor,
-  retention, DSR/deletion workflow).
-- **Phase 1C** — tiny real-send pilot. Blocked by deliverability
-  basics, provider approval, audit trail.
-- **Phase 2** — reliability: adversarial test suite, observability
-  dashboards, evals, resumability, backpressure.
-- **Phase 3–4** — production readiness and multi-tenant productization.
+- **Real-prospect sending** — gated behind the §6 revisit criteria in
+  [the sending-provider decision record](docs/decisions/sending-provider.md);
+  the Smartlead enrollment adapter is deliberately deferred until then.
+- **Multi-step sequences** — the send path currently pins
+  `sequence_step = 1`; the duplicate/idempotency check must be
+  generalized before step 2 exists.
+- **Phase 3–4** — production readiness and multi-tenant productization
+  (KMS-managed master key, per-mailbox capacity model, tenant
+  onboarding).

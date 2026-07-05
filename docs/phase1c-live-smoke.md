@@ -28,8 +28,12 @@ smoke swaps the fake SES client for the real one via configuration only.
 ```bash
 RELAY_REAL_SEND_ENABLED=true
 RELAY_SENDER_PROVIDER=ses
-RELAY_AWS_REGION=…
-RELAY_SES_FROM_ADDRESS=pilot@testings.work
+AWS_REGION=…
+RELAY_SES_FROM=pilot@testings.work
+# REQUIRED — the §6 pilot allowlist is fail-closed: leaving it unset
+# blocks EVERY real send on recipient_on_pilot_allowlist. List the two
+# verified inboxes; add bounce@simulator.amazonses.com before step 5.
+RELAY_PILOT_RECIPIENTS=…,…
 RELAY_UNSUBSCRIBE_MAILTO=unsubscribe@testings.work
 RELAY_SENDER_IDENTITY_APPROVED=true       # after checking the SES console
 RELAY_SENDER_DOMAIN_AUTHENTICATED=true    # after checking DKIM/SPF/DMARC green
@@ -49,7 +53,9 @@ RELAY_SQS_QUEUE_URL=…
 4. Verify audit: `send.executed` rows with provider message ids.
 5. Bounce path: send one more approved message to
    `bounce@simulator.amazonses.com` — SES's sandbox-safe bounce
-   simulator (add it as a third lead; it needs no verification). Then
+   simulator (add it as a third lead; it needs no verification, but it
+   DOES need to be on `RELAY_PILOT_RECIPIENTS` or the send is
+   allowlist-blocked). Then
    `just events` — expect the lead in `bounce_received` and a
    `hard_bounce` suppression entry.
 6. Re-run `just worker` and confirm the suppressed address can never be

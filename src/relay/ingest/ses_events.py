@@ -244,6 +244,13 @@ def _process_ses_event(event: dict, stats: IngestStats) -> None:
     for address in _recipients(event):
         if not address:
             continue
+        if "@" not in address:
+            # A recipient with no domain part cannot be one of ours; a
+            # ValueError here would poison the whole envelope. Never log
+            # the raw value (PII policy).
+            log.warning("provider event recipient malformed", kind=kind)
+            stats.ignored += 1
+            continue
         recipient_hash = hash_email(address)
         domain = email_domain(address)
         tenants = _tenants_for_hash(recipient_hash)
@@ -284,7 +291,7 @@ def _handle_bounce(
         stats.ignored += 1
         return
     with tenant_session(tenant_id) as session:
-        lead = (
+        leads = (
             session.execute(
                 select(Lead).where(
                     Lead.email_hash == recipient_hash,
@@ -292,19 +299,22 @@ def _handle_bounce(
                 )
             )
             .scalars()
-            .first()
+            .all()
         )
-        if lead is not None:
+        if leads:
+            # The same address can sit in several campaigns; a hard bounce
+            # is a dead-address signal, so EVERY lead in 'sent' moves.
             # fn_auto_suppress writes the hard-bounce suppression entry in
-            # this same transaction as the transition — one signal, one
-            # transition, one entry.
-            transition(
-                session,
-                lead,
-                LeadState.BOUNCE_RECEIVED,
-                actor=ACTOR,
-                reason="provider hard bounce (SES)",
-            )
+            # this same transaction, idempotently — one signal, one entry,
+            # however many leads transition.
+            for lead in leads:
+                transition(
+                    session,
+                    lead,
+                    LeadState.BOUNCE_RECEIVED,
+                    actor=ACTOR,
+                    reason="provider hard bounce (SES)",
+                )
         else:
             # No lead is in 'sent' to transition (it already moved on, a
             # replay, or the address is only known from an earlier send).

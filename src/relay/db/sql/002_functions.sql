@@ -594,7 +594,22 @@ $$;
 CREATE OR REPLACE FUNCTION fn_auto_suppress() RETURNS trigger
 LANGUAGE plpgsql
 AS $$
+DECLARE
+  v_reason text := CASE WHEN NEW.state = 'unsubscribed'
+                        THEN 'unsubscribe' ELSE 'hard_bounce' END;
 BEGIN
+  -- Idempotent per (tenant, address, reason): one bounce signal can move
+  -- several leads (the same address in several campaigns), and the
+  -- reputation threshold counts suppression rows — a single dead address
+  -- must weigh once, not once per lead.
+  IF EXISTS (
+    SELECT 1 FROM suppression
+    WHERE tenant_id = NEW.tenant_id
+      AND email_hash = NEW.email_hash
+      AND reason = v_reason
+  ) THEN
+    RETURN NEW;
+  END IF;
   INSERT INTO suppression (
     tenant_id, scope, email_hash, domain, reason, source,
     created_by, applies_to_marketing, applies_to_sales
@@ -604,8 +619,7 @@ BEGIN
     'tenant',
     NEW.email_hash,
     NEW.email_domain,
-    CASE WHEN NEW.state = 'unsubscribed'
-         THEN 'unsubscribe' ELSE 'hard_bounce' END,
+    v_reason,
     'system',
     'trigger:fn_auto_suppress',
     true,
