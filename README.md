@@ -202,6 +202,18 @@ Three conventions matter more here than in most repos:
 - `.env` never gets committed, and every new setting gets a documented
   line in `.env.example`.
 
+### Where a change lives
+
+![Where a change lives: n8n orchestrates, Python decides](docs/img/change-map.svg)
+
+n8n owns orchestration: when steps fire, in what order, under what
+conditions. The Python in `src/relay/` owns behavior: what every one
+of those steps actually does. That split means most changes are
+ordinary code changes that go through the loop above. Editing the
+spine itself is the narrow case, and it's a manual round trip &mdash;
+n8n doesn't sync to git, so the export back to
+`infra/n8n/relay-spine.json` is on you.
+
 ## Where things stand
 
 This is a working prototype. Every planned phase is built and tested,
