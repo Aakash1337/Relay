@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from relay.config import get_settings
@@ -205,12 +205,31 @@ def evaluate(
             settings.sender_domain_authenticated,
             "SPF/DKIM/DMARC attest missing (RELAY_SENDER_DOMAIN_AUTHENTICATED)",
         )
+        # Race-proofing: a worker's in-flight claim ('sending') is invisible
+        # to other transactions until commit, so a plain count lets N
+        # concurrent workers all pass at cap−1. This per-tenant advisory
+        # lock serializes cap evaluation and is released at commit/rollback
+        # — by which time this transaction's claim is visible to the next
+        # holder. Real mode only; simulated sends never take it.
+        session.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtextextended('relay:real-send-cap:' || :tenant, 0))"
+            ),
+            {"tenant": str(lead.tenant_id)},
+        )
+        # The window keys on started_at (when the send actually began), not
+        # queued_at: a job queued yesterday that sends now is a send now.
+        # 'failed' rows with started_at set are crash-recovered mid-send
+        # jobs ("outcome unknown" — the mail may have left), so they count;
+        # pre-send failures never acquire a committed started_at.
         recent_real_sends = session.execute(
             select(func.count()).where(
                 SendJob.tenant_id == lead.tenant_id,
                 SendJob.mode == "real",
-                SendJob.status.in_(("sending", "sent")),
-                SendJob.queued_at >= datetime.now(tz=UTC) - timedelta(hours=24),
+                SendJob.status.in_(("sending", "sent", "failed")),
+                SendJob.started_at.isnot(None),
+                SendJob.started_at >= datetime.now(tz=UTC) - timedelta(hours=24),
             )
         ).scalar_one()
         check(

@@ -366,3 +366,96 @@ def test_hard_bounce_suppresses_even_when_lead_not_in_sent(tenant_a, factory_a):
             .all()
         )
         assert len(entries) == 1
+
+
+# ── One bounce signal, every affected lead ──────────────────────────────────
+
+
+def test_hard_bounce_moves_every_sent_lead_for_the_address(tenant_a, factory_a):
+    """One dead address can sit in several campaigns: a single hard bounce
+    must move EVERY lead in 'sent' for that hash — while the auto-suppress
+    trigger still writes exactly one suppression entry (the reputation
+    threshold counts entries, so one signal must weigh once)."""
+    tenant_id, _ = tenant_a
+    email = f"multi-{uuid.uuid4().hex[:6]}@example.test"
+    first = factory_a.lead(email=email)
+    second = factory_a.lead(email=email)  # its own campaign (factory default)
+    walk_to_sent(tenant_id, first)
+    walk_to_sent(tenant_id, second)
+
+    stats = process_sns_envelope(_envelope(_bounce_event(email)), verifier=_TRUST_ALL)
+    assert stats.bounces == 1
+
+    with tenant_session(tenant_id) as session:
+        for lead_id in (first, second):
+            lead = session.get(Lead, lead_id)
+            assert lead is not None and lead.state == "bounce_received"
+        entries = (
+            session.execute(
+                select(Suppression).where(
+                    Suppression.email_hash == hash_email(email),
+                    Suppression.reason == "hard_bounce",
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(entries) == 1
+
+
+def test_malformed_recipient_is_ignored_not_poisonous():
+    """A recipient with no domain part cannot be ours; it must be counted
+    as ignored — never raised — or one bad event would poison the whole
+    envelope (and, via the SQS path, stall the queue)."""
+    stats = process_sns_envelope(
+        _envelope(_bounce_event("not-an-email")), verifier=_TRUST_ALL
+    )
+    assert stats.bounces == 0 and stats.ignored == 1
+
+
+def test_sqs_poller_isolates_unexpected_failures(tenant_a, factory_a, monkeypatch):
+    """An UNEXPECTED per-message failure (DB outage mid-write, unlike a
+    rejected envelope) must not stall the rest of the batch — and the
+    failed message must stay in the queue for redelivery."""
+    tenant_id, _ = tenant_a
+    email = f"iso-{uuid.uuid4().hex[:6]}@example.test"
+    lead_id = factory_a.lead(email=email)
+    walk_to_sent(tenant_id, lead_id)
+
+    class FakeSQS:
+        def __init__(self, bodies):
+            self.bodies = bodies
+            self.deleted = []
+
+        def receive_message(self, **kwargs):
+            return {
+                "Messages": [
+                    {"Body": b.decode(), "ReceiptHandle": f"rh-{i}"}
+                    for i, b in enumerate(self.bodies)
+                ]
+            }
+
+        def delete_message(self, QueueUrl, ReceiptHandle):  # noqa: N803
+            self.deleted.append(ReceiptHandle)
+
+    monkeypatch.setenv("RELAY_SQS_QUEUE_URL", "https://sqs.fake/queue")
+    get_settings.cache_clear()
+    import relay.workers.event_worker as event_worker
+
+    def handler(body):
+        if body == "boom":
+            raise RuntimeError("simulated db outage")
+        return process_sns_envelope(body, verifier=_TRUST_ALL)
+
+    monkeypatch.setattr(event_worker, "process_sns_envelope", handler)
+    fake = FakeSQS([b"boom", _envelope(_bounce_event(email))])
+    stats = event_worker.poll_once(client=fake)
+    get_settings.cache_clear()
+
+    assert stats.received == 2
+    assert stats.errored == 1
+    assert stats.processed == 1
+    assert fake.deleted == ["rh-1"]  # poison message left for redelivery
+    with tenant_session(tenant_id) as session:
+        lead = session.get(Lead, lead_id)
+        assert lead is not None and lead.state == "bounce_received"

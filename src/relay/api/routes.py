@@ -240,7 +240,7 @@ def create_lead(
                     "source_id": str(body.source_id),
                     "lawful_basis": body.lawful_basis,
                     "region_assumption": body.region_assumption,
-                    "email": str(body.email),  # redacted to a hash in audit
+                    "email": str(body.email),  # deny-key: audit stores [REDACTED]
                 },
             )
             session.flush()

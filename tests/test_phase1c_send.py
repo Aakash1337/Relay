@@ -445,3 +445,99 @@ def test_real_person_lead_cannot_enter_the_pilot_send_set(
                 ),
                 params,
             )
+
+
+def test_ses_sender_refuses_recipient_off_allowlist(
+    tenant_a, factory_a, pilot_env, monkeypatch
+):
+    """Last-hop backstop of the §6 allowlist: even a job that passed
+    eligibility is refused at the provider boundary when its recipient is
+    not on RELAY_PILOT_RECIPIENTS (e.g. the list changed between queue
+    and send)."""
+    tenant_id, _ = tenant_a
+    lead_id = _pilot_lead(factory_a)
+    _walk_to_queue(tenant_id, lead_id)
+
+    monkeypatch.setenv("RELAY_PILOT_RECIPIENTS", "someone-else@example.test")
+    get_settings.cache_clear()
+    fake = FakeSES()
+    sender = SESSender(client=fake)  # allowlist frozen at construction
+    with tenant_session(tenant_id) as session:
+        job = session.execute(select(SendJob)).scalar_one()
+        lead = session.get(Lead, lead_id)
+        with pytest.raises(RealSendUnavailable, match="pilot allowlist"):
+            sender.send(job=job, draft=None, lead=lead)  # type: ignore[arg-type]
+    assert fake.requests == []
+
+
+def test_daily_cap_counts_crash_recovered_unknown_outcome_jobs(
+    tenant_a, factory_a, pilot_env, monkeypatch
+):
+    """A crash-orphaned job ('failed' with started_at set — outcome
+    unknown, the mail may have left) must count toward the cap, and the
+    window keys on when the send began, not when the job was queued."""
+    tenant_id, _ = tenant_a
+    monkeypatch.setenv("RELAY_REAL_SEND_DAILY_CAP", "1")
+    get_settings.cache_clear()
+
+    from datetime import UTC, datetime
+
+    first = _pilot_lead(factory_a)
+    _walk_to_queue(tenant_id, first)
+    # Simulate the crash exactly as recovery records it: the claim was
+    # committed (sending, started_at set), the process died, recovery
+    # marked the job failed — started_at survives.
+    with tenant_session(tenant_id) as session:
+        job = session.execute(select(SendJob)).scalar_one()
+        job.status = "sending"
+        job.started_at = datetime.now(tz=UTC)
+    with tenant_session(tenant_id) as session:
+        job = session.execute(select(SendJob)).scalar_one()
+        job.status = "failed"
+        job.error = "orphaned mid-send by crash; outcome unknown"
+
+    second = _pilot_lead(factory_a)
+    run_to_approval(tenant_id, second)
+    approve_current_draft(tenant_id, second)
+    from relay.pipeline.runner import PipelineRunner
+
+    outcome = PipelineRunner(tenant_id, lead_id=second).run()
+    assert outcome.final_state == "send_blocked"
+    assert pilot_env.requests == []
+    with tenant_session(tenant_id) as session:
+        from relay.db.models import LeadTransition
+
+        reason = session.execute(
+            select(LeadTransition.reason).where(
+                LeadTransition.lead_id == second,
+                LeadTransition.to_state == "send_blocked",
+            )
+        ).scalar_one()
+        assert "mailbox_active_below_cap" in (reason or "")
+
+
+def test_daily_cap_holds_under_concurrent_workers(
+    tenant_a, factory_a, pilot_env, monkeypatch
+):
+    """Race the cap: with cap=2 and three approved jobs, four concurrent
+    workers must send exactly two. Each worker's in-flight claim is
+    invisible to the others until commit, so without the per-tenant
+    advisory lock every worker would count the same committed total and
+    all three sends would go out."""
+    tenant_id, _ = tenant_a
+    monkeypatch.setenv("RELAY_REAL_SEND_DAILY_CAP", "2")
+    get_settings.cache_clear()
+
+    for _ in range(3):
+        _walk_to_queue(tenant_id, _pilot_lead(factory_a))
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        stats = list(pool.map(lambda _: process_pending(max_jobs=10), range(4)))
+
+    assert sum(s.sent for s in stats) == 2
+    assert len(pilot_env.requests) == 2  # the provider saw exactly the cap
+    with tenant_session(tenant_id) as session:
+        statuses = sorted(session.execute(select(SendJob.status)).scalars().all())
+        assert statuses == ["blocked", "sent", "sent"]

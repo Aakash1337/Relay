@@ -4,8 +4,11 @@ SNS→SQS→this worker: SES events land in a queue and RELAY polls it on
 the spine's schedule, so nothing needs to be reachable from the
 internet during the pilot. Each message body is a full SNS envelope and
 goes through exactly the same signature-verified handler as the HTTPS
-webhook; a message is deleted from the queue only after successful
-processing (failed ones redeliver — the handler is idempotent).
+webhook. Message disposition: processed and rejected (forged/malformed)
+envelopes are both deleted — redelivering a forged message forever
+helps no one; an UNEXPECTED failure (DB outage mid-write) leaves the
+message in the queue for redelivery without stalling the rest of the
+batch (the handler is idempotent, so redelivery is safe).
 
     uv run relay-events            # one drain pass
 """
@@ -28,6 +31,7 @@ class PollStats:
     received: int = 0
     processed: int = 0
     rejected: int = 0
+    errored: int = 0
 
 
 def poll_once(*, client: Any | None = None, max_messages: int = 10) -> PollStats:
@@ -57,6 +61,13 @@ def poll_once(*, client: Any | None = None, max_messages: int = 10) -> PollStats
             # or malformed message forever helps no one; it is logged.
             stats.rejected += 1
             log.warning("sqs message rejected", error=str(exc))
+        except Exception as exc:  # noqa: BLE001 — one bad message must not stall the drain
+            # Unexpected failure (e.g. DB outage mid-write): leave the
+            # message in the queue for redelivery — the handler is
+            # idempotent — and keep draining the rest of the batch.
+            stats.errored += 1
+            log.error("sqs message processing failed", error=str(exc))
+            continue
         else:
             stats.processed += 1
         client.delete_message(
@@ -69,6 +80,7 @@ def poll_once(*, client: Any | None = None, max_messages: int = 10) -> PollStats
             received=stats.received,
             processed=stats.processed,
             rejected=stats.rejected,
+            errored=stats.errored,
         )
     return stats
 
