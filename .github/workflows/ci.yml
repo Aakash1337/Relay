@@ -48,3 +48,17 @@ jobs:
 
       - name: Run tests (Phase 0 exit gate)
         run: uv run pytest tests/ -v --tb=short
+
+  docker-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the application image
+        run: docker build -t relay:ci .
+
+      - name: Image smoke test (app imports, entrypoints resolve)
+        run: |
+          docker run --rm relay:ci python -c "import relay.api.app, relay.workers.send_worker, relay.workers.event_worker, relay.workers.retention_worker, relay.db.migrate; print('imports ok')"
+          docker run --rm relay:ci relay-worker --help
+          docker run --rm relay:ci uvicorn --version

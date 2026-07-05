@@ -1,0 +1,22 @@
+# Never let secrets into the build context.
+.env
+.env.*
+!.env.example
+
+.git
+.github
+.venv
+.pgdata
+.pytest_cache
+.ruff_cache
+.devcontainer
+__pycache__
+**/__pycache__
+tests
+docs
+infra
+scripts
+docker-compose*.yml
+Dockerfile
+README.md
+justfile
