@@ -9,6 +9,12 @@ booking. It is designed so that an unlawful, suppressed, or duplicate
 send is *structurally impossible* — enforced by the database, not by
 good intentions.
 
+> **Status: prototype (2026-07-05).** All roadmap phases are
+> code-complete; the deliberately-skipped operator/legal items and the
+> go-to-production checklist are recorded in
+> [docs/prototype-status.md](docs/prototype-status.md) — read that
+> first if you are picking this project back up.
+
 This repository currently implements **Phase 0 — Foundations &
 Scaffolding**, **Phase 1A — Synthetic dry-run MVP**, **Phase 1B —
 Real-data, no-send pilot**, **Phase 2 — Reliability, observability &
