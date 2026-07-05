@@ -737,3 +737,23 @@ AS $$
   SELECT DISTINCT tenant_id FROM leads
   WHERE retention_until IS NOT NULL AND retention_until <= now()
 $$;
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- Crash-recovery discovery (Phase 2): tenants holding work orphaned by a
+-- dead process — pipeline runs stuck 'running' or send jobs stuck
+-- 'sending' beyond the staleness window. The recovery pass iterates
+-- these under each tenant's own RLS context.
+-- ─────────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION fn_tenants_with_stale_work(p_stale_seconds double precision)
+RETURNS SETOF uuid
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+  SELECT tenant_id FROM pipeline_runs
+  WHERE status = 'running'
+    AND started_at < now() - make_interval(secs => p_stale_seconds)
+  UNION
+  SELECT tenant_id FROM send_jobs
+  WHERE status = 'sending'
+    AND started_at < now() - make_interval(secs => p_stale_seconds)
+$$;

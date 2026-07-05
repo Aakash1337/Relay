@@ -326,3 +326,32 @@ class ErasureResponse(BaseModel):
     crm: dict[str, str]
     vector_store: str
     suppression_added: bool
+
+
+# ── Observability (Phase 2) ─────────────────────────────────────────────────
+
+
+class MetricsResponse(BaseModel):
+    tenant_id: uuid.UUID
+    generated_at: datetime
+    lead_states: dict[str, int]
+    runs_window: dict[str, int]
+    cost_units_window: float
+    send_jobs: dict[str, int]
+    replies_window: int
+    sent_window: int
+    suppression_entries: int
+    run_error_rate: float | None
+    reply_rate: float | None
+
+
+class AlertItem(BaseModel):
+    rule: str
+    severity: str
+    detail: str
+    value: float
+
+
+class AlertsResponse(BaseModel):
+    tenant_id: uuid.UUID
+    alerts: list[AlertItem]

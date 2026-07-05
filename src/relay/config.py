@@ -83,6 +83,31 @@ class Settings(BaseSettings):
     # means "not calibrated" and the USD figure is omitted, not guessed.
     cost_unit_usd: float = Field(default=0.0, ge=0)
 
+    # ── Rate limiting & bounded retries (Phase 2) ──────────────────────────
+    # Requests/second per external target; 0 disables that bucket. Waits
+    # beyond max_wait raise Backpressure (work parks instead of queueing).
+    rate_limit_local_rps: float = Field(default=0.0, ge=0)
+    rate_limit_hosted_rps: float = Field(default=0.0, ge=0)
+    rate_limit_crm_rps: float = Field(default=0.0, ge=0)
+    rate_limit_max_wait_seconds: float = Field(default=30.0, gt=0)
+    # Bounded retry for TRANSIENT compute failures only (never refusals,
+    # never invalid output, never a different provider).
+    compute_retry_attempts: int = Field(default=2, ge=0)
+    compute_retry_base_seconds: float = Field(default=0.5, ge=0)
+
+    # ── Alerting thresholds (Phase 2) ───────────────────────────────────────
+    alert_spend_units_per_hour: float = Field(default=100.0, gt=0)
+    alert_failure_streak: int = Field(default=3, ge=2)
+    alert_queue_stale_seconds: float = Field(default=600.0, gt=0)
+    #: Optional webhook (Slack/n8n/…) for fired alerts; empty = log only.
+    alert_webhook_url: str = ""
+
+    # ── Crash recovery (Phase 2) ────────────────────────────────────────────
+    # A pipeline run still 'running' (or a send job still 'sending') after
+    # this many seconds is an orphan from a crash — no legitimate per-lead
+    # run or single send takes anywhere near this long.
+    recovery_stale_after_seconds: float = Field(default=300.0, gt=0)
+
     # ── Pipeline decision thresholds (Phase 1A) ─────────────────────────────
     # Leads scoring below this are scored_rejected. Default sits below the
     # offline backend's floor (0.35) so hermetic runs qualify by default;

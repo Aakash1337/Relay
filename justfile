@@ -89,6 +89,10 @@ worker:
 retention:
     uv run relay-retention
 
+# Run reasoning evals against the configured backends (spends real quota)
+evals which="both":
+    uv run python scripts/run_evals.py {{which}}
+
 # Walk a synthetic lead through the entire state machine and print the trace
 demo:
     uv run python scripts/demo_journey.py

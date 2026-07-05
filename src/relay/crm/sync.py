@@ -14,6 +14,7 @@ from relay.crm.registry import crm_adapter
 from relay.db.engine import tenant_session
 from relay.db.models import Lead
 from relay.logs import get_logger
+from relay.ratelimit import limit_crm
 
 log = get_logger(__name__)
 
@@ -40,6 +41,7 @@ def sync_lead(tenant_id: uuid.UUID, lead_id: uuid.UUID, *, context: str) -> bool
             dry_run=lead.dry_run,
         )
     try:
+        limit_crm()  # backpressure applies to the mirror too
         adapter.upsert_lead(snapshot)
         adapter.record_event(
             snapshot.external_ref, "state", f"{context}: {snapshot.state}"

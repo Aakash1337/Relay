@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from relay.compute.base import ComputeRefused, ComputeUnavailable
 from relay.compute.prompting import UNTRUSTED_KEY
 from relay.config import get_settings
 from relay.crm.sync import sync_lead
@@ -39,7 +40,7 @@ from relay.db.models import (
     build_idempotency_key,
 )
 from relay.domain import eligibility
-from relay.domain.state_machine import transition
+from relay.domain.state_machine import resume_from_error, transition
 from relay.domain.states import TERMINAL_STATES, LeadState
 from relay.domain.vocab import TriageCategory
 from relay.guardrails.harness import GuardrailViolation, RunHarness
@@ -156,22 +157,60 @@ class PipelineRunner:
     # ── Step engine ─────────────────────────────────────────────────────────
 
     def _advance_once(self) -> tuple[str, bool]:
-        """One step in its own transaction. Returns (state, progressed)."""
+        """One step in its own transaction. Returns (state, progressed).
+
+        Transient compute failures park the lead in ``error_retryable``
+        (resumable — a later run picks it back up via the resume handler,
+        the DB trigger counting retries); model refusals park it in
+        ``error_terminal`` for human attention. The failed step's
+        transaction has already rolled back when the park happens, so a
+        crashed-and-parked step leaves no partial work behind.
+        """
+        try:
+            with tenant_session(self.tenant_id) as session:
+                lead = session.get(Lead, self.lead_id)
+                if lead is None:
+                    raise LookupError(f"lead {self.lead_id} not found")
+                state = LeadState(lead.state)
+                if state in TERMINAL_STATES or state in _WAIT_STATES:
+                    return str(state), False
+                handler = _STEP_HANDLERS.get(state)
+                if handler is None:
+                    return str(state), False
+                try:
+                    handler(self, session, lead)
+                except _NoProgress:
+                    return str(state), False
+                return str(lead.state), True
+        except ComputeUnavailable as exc:
+            return self._park(
+                LeadState.ERROR_RETRYABLE, f"transient compute failure: {exc}"
+            )
+        except ComputeRefused as exc:
+            return self._park(LeadState.ERROR_TERMINAL, f"model refused: {exc}")
+
+    def _park(self, target: LeadState, reason: str) -> tuple[str, bool]:
+        """Move the lead to an error state in a fresh transaction (the
+        failing step's session has already rolled back)."""
         with tenant_session(self.tenant_id) as session:
             lead = session.get(Lead, self.lead_id)
             if lead is None:
                 raise LookupError(f"lead {self.lead_id} not found")
-            state = LeadState(lead.state)
-            if state in TERMINAL_STATES or state in _WAIT_STATES:
-                return str(state), False
-            handler = _STEP_HANDLERS.get(state)
-            if handler is None:
-                return str(state), False
-            try:
-                handler(self, session, lead)
-            except _NoProgress:
-                return str(state), False
-            return str(lead.state), True
+            transition(
+                session,
+                lead,
+                target,
+                actor=ACTOR,
+                reason=reason[:500],
+                run_id=self.harness.run_id,
+            )
+        log.warning(
+            "lead parked",
+            lead_id=str(self.lead_id),
+            target=str(target),
+            reason=reason[:200],
+        )
+        return str(target), False
 
     @staticmethod
     def _stop_reason(state: str) -> str:
@@ -179,6 +218,8 @@ class PipelineRunner:
             return "waiting_human"
         if state == str(LeadState.SEND_QUEUED):
             return "waiting_worker"
+        if state == str(LeadState.ERROR_RETRYABLE):
+            return "error_retryable"  # a later run resumes it
         if LeadState(state) in TERMINAL_STATES:
             return "terminal"
         return "idle"
@@ -588,6 +629,27 @@ class PipelineRunner:
             run_id=self.harness.run_id,
         )
 
+    def _step_resume_from_error(self, session: Session, lead: Lead) -> None:
+        """Resume a retryable error to its recorded return state — or park
+        it terminally when the cap is spent. The DB trigger re-enforces
+        both the resume target and the cap; this is the polite version."""
+        self.harness.tick("resume_from_error")
+        if not lead.error_return_state or lead.retry_count >= lead.max_retries:
+            transition(
+                session,
+                lead,
+                LeadState.ERROR_TERMINAL,
+                actor=ACTOR,
+                reason=(
+                    f"retry cap exhausted ({lead.retry_count}/{lead.max_retries})"
+                    if lead.error_return_state
+                    else "no recorded resume state"
+                ),
+                run_id=self.harness.run_id,
+            )
+            return
+        resume_from_error(session, lead, actor=ACTOR, run_id=self.harness.run_id)
+
 
 class _NoProgress(Exception):
     """Internal: a handler decided there is nothing to do."""
@@ -612,4 +674,5 @@ _STEP_HANDLERS = {
     LeadState.INTERESTED: PipelineRunner._step_queue_booking,
     LeadState.BOOKING_PENDING: PipelineRunner._step_book,
     LeadState.BOOKED: PipelineRunner._step_close,
+    LeadState.ERROR_RETRYABLE: PipelineRunner._step_resume_from_error,
 }
