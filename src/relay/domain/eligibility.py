@@ -257,8 +257,9 @@ def evaluate(
         )
         check(
             "unsubscribe_mechanism_present",
-            bool(settings.unsubscribe_mailto),
-            "RELAY_UNSUBSCRIBE_MAILTO not set (List-Unsubscribe header)",
+            bool(settings.unsubscribe_mailto or settings.unsubscribe_url),
+            "no unsubscribe target set (RELAY_UNSUBSCRIBE_MAILTO or "
+            "RELAY_UNSUBSCRIBE_URL — the List-Unsubscribe header)",
         )
         check(
             "provider_terms_allow",

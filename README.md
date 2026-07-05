@@ -124,6 +124,14 @@ to change safely.
 
 ---
 
+## Phase 3 — production readiness (in progress)
+
+| Capability | Where |
+| --- | --- |
+| **One-click unsubscribe (RFC 8058)**: every real send embeds a per-job signed-token URL in its List-Unsubscribe header (beside the mailto). `GET /unsubscribe` renders a confirm page and never mutates state (mail clients and scanners prefetch links); the `POST` honors it idempotently — the lead transitions to `unsubscribed` where the state machine allows, and the do-not-contact suppression entry ALWAYS lands, decoupled, same pattern as bounces. Tokens are HMAC-signed with a per-tenant derived key and carry no PII | `ingest/unsubscribe.py`, `api/routes.py`, `senders/ses.py` |
+
+---
+
 ## Exit gate — every item is a passing test
 
 Run them: `just test-exit-gate` (or `just test` for the full suite).
