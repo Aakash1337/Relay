@@ -6,16 +6,16 @@
 #   docker run --rm -p 8000:8000 --env-file .env relay
 #
 # Configuration comes from the environment (--env-file or compose env_file);
-# nothing is baked in. See docker-compose.prod.yml for the full topology.
+# nothing is baked in. The production topology lives in
+# deploy/docker-compose.prod.yml (see deploy/README.md).
 
-FROM python:3.12-slim
+FROM python:3.12-slim AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
-    UV_PYTHON_DOWNLOADS=never \
-    PYTHONUNBUFFERED=1
+    UV_PYTHON_DOWNLOADS=never
 
 WORKDIR /app
 
@@ -26,9 +26,19 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY src ./src
 RUN uv sync --frozen --no-dev
 
-ENV PATH="/app/.venv/bin:$PATH"
 
-RUN useradd --system --create-home relay && chown -R relay:relay /app
+# Runtime stage: no uv, no build tooling — just the venv and the source.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PATH="/app/.venv/bin:$PATH"
+
+WORKDIR /app
+
+RUN useradd --system --create-home relay
+
+COPY --from=builder --chown=relay:relay /app /app
+
 USER relay
 
 EXPOSE 8000

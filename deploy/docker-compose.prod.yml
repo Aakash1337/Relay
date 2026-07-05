@@ -1,0 +1,186 @@
+# RELAY — production compose. Provider-neutral: runs on any Docker host.
+#
+# Postgres is an EXTERNAL managed service here (Cloud SQL, RDS, Azure
+# Database, or your own) — reference it via RELAY_DATABASE_URL /
+# RELAY_APP_DATABASE_URL. For a cheaper single-box first deploy with a
+# containerized Postgres instead, add the override file:
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.local-db.yml up -d
+#
+# All configuration and secrets come from the environment at runtime
+# (--env-file pointing at a file assembled from your secret store — see
+# deploy/README.md). Never a committed .env.
+#
+#   RELAY_IMAGE=<registry>/relay:<tag> \
+#   docker compose -f deploy/docker-compose.prod.yml --env-file /run/relay/relay.env up -d
+#
+# The cloudflared tunnel (private ingress for the API) is behind the
+# "tunnel" profile: enable with --profile tunnel (or COMPOSE_PROFILES=tunnel)
+# and a TUNNEL_TOKEN in the environment.
+#
+# No Mailpit here (real mail goes via SES), no Redis (nothing in RELAY
+# uses it), no dev conveniences. The dev stack stays in ../docker-compose.yml.
+
+x-relay-env: &relay-env
+  RELAY_ENV: prod
+  RELAY_DATABASE_URL: ${RELAY_DATABASE_URL:?set RELAY_DATABASE_URL (admin/migrations DSN)}
+  RELAY_APP_DATABASE_URL: ${RELAY_APP_DATABASE_URL:?set RELAY_APP_DATABASE_URL (runtime DSN)}
+  RELAY_APP_DB_PASSWORD: ${RELAY_APP_DB_PASSWORD:?set RELAY_APP_DB_PASSWORD}
+  RELAY_ADMIN_TOKEN: ${RELAY_ADMIN_TOKEN:?set RELAY_ADMIN_TOKEN}
+  RELAY_MASTER_KEY: ${RELAY_MASTER_KEY:?set RELAY_MASTER_KEY}
+  RELAY_EMAIL_HASH_PEPPER: ${RELAY_EMAIL_HASH_PEPPER:?set RELAY_EMAIL_HASH_PEPPER}
+  RELAY_MASTER_KEY_PREVIOUS: ${RELAY_MASTER_KEY_PREVIOUS:-}
+  RELAY_EMAIL_HASH_LEGACY_LOOKUP: ${RELAY_EMAIL_HASH_LEGACY_LOOKUP:-true}
+  # Compute tiers (offline by default; set backend + model + key to go live).
+  RELAY_COMPUTE_LOCAL_BACKEND: ${RELAY_COMPUTE_LOCAL_BACKEND:-offline}
+  RELAY_COMPUTE_HOSTED_BACKEND: ${RELAY_COMPUTE_HOSTED_BACKEND:-offline}
+  RELAY_LOCAL_MODEL: ${RELAY_LOCAL_MODEL:-}
+  RELAY_HOSTED_MODEL: ${RELAY_HOSTED_MODEL:-}
+  RELAY_GOOGLE_API_KEY: ${RELAY_GOOGLE_API_KEY:-}
+  RELAY_ANTHROPIC_API_KEY: ${RELAY_ANTHROPIC_API_KEY:-}
+  RELAY_OPENAI_COMPAT_BASE_URL: ${RELAY_OPENAI_COMPAT_BASE_URL:-}
+  RELAY_OPENAI_COMPAT_API_KEY: ${RELAY_OPENAI_COMPAT_API_KEY:-}
+  # Real sending (SES on AWS — cross-cloud by design; all fail-closed).
+  RELAY_REAL_SEND_ENABLED: ${RELAY_REAL_SEND_ENABLED:-false}
+  RELAY_SENDER_PROVIDER: ${RELAY_SENDER_PROVIDER:-none}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+  AWS_REGION: ${AWS_REGION:-}
+  RELAY_SES_FROM: ${RELAY_SES_FROM:-}
+  RELAY_SES_CONFIGURATION_SET: ${RELAY_SES_CONFIGURATION_SET:-}
+  RELAY_PILOT_RECIPIENTS: ${RELAY_PILOT_RECIPIENTS:-}
+  RELAY_UNSUBSCRIBE_MAILTO: ${RELAY_UNSUBSCRIBE_MAILTO:-}
+  RELAY_UNSUBSCRIBE_URL: ${RELAY_UNSUBSCRIBE_URL:-}
+  RELAY_SENDER_IDENTITY_APPROVED: ${RELAY_SENDER_IDENTITY_APPROVED:-false}
+  RELAY_SENDER_DOMAIN_AUTHENTICATED: ${RELAY_SENDER_DOMAIN_AUTHENTICATED:-false}
+  RELAY_PROVIDER_TERMS_RECORD: ${RELAY_PROVIDER_TERMS_RECORD:-}
+  RELAY_SQS_QUEUE_URL: ${RELAY_SQS_QUEUE_URL:-}
+  RELAY_SES_WEBHOOK_TOKEN: ${RELAY_SES_WEBHOOK_TOKEN:-}
+  RELAY_REGION_BASIS_RULES: ${RELAY_REGION_BASIS_RULES:-}
+  RELAY_ALERT_WEBHOOK_URL: ${RELAY_ALERT_WEBHOOK_URL:-}
+
+x-relay-service: &relay-service
+  image: ${RELAY_IMAGE:-relay:latest}
+  environment: *relay-env
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+  restart: unless-stopped
+
+services:
+  # One-shot, idempotent: schema evolution, triggers, RLS, rule seeding.
+  # Everything else waits for it. Safe to re-run on every deploy/boot.
+  migrate:
+    image: ${RELAY_IMAGE:-relay:latest}
+    command: relay-migrate
+    environment: *relay-env
+    restart: "no"
+
+  api:
+    <<: *relay-service
+    # Loopback only: operators reach it via SSH tunnel; the outside world
+    # via the cloudflared tunnel. Never publish this on 0.0.0.0.
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+
+  # The workers are one-shot passes by design; the loop is the scheduler.
+  # `sh -ec` means a failing pass kills the container and Docker's restart
+  # policy takes over (visible crash-loop instead of silent failure).
+  # Overlapping/racing passes are safe: claiming uses FOR UPDATE SKIP LOCKED.
+  send-worker:
+    <<: *relay-service
+    command: sh -ec 'while true; do relay-worker --once --concurrency 4; sleep 300; done'
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512m
+
+  # Pull-based: polls SQS for SES bounce/complaint events. Needs only
+  # OUTBOUND reachability to AWS — no inbound webhook required. Idles
+  # politely when no queue is configured instead of crash-looping.
+  event-worker:
+    <<: *relay-service
+    command: >
+      sh -ec 'while true; do
+        if [ -n "$$RELAY_SQS_QUEUE_URL" ]; then relay-events;
+        else echo "RELAY_SQS_QUEUE_URL not set; idling"; fi;
+        sleep 300; done'
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512m
+
+  # Periodic by nature: one purge + crash-recovery pass a day.
+  retention-worker:
+    <<: *relay-service
+    command: sh -ec 'while true; do relay-retention; sleep 86400; done'
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512m
+
+  # The scheduler spine. Talks to the API over the compose network; its
+  # tick node authenticates with the admin token. Import
+  # infra/n8n/relay-spine.json through its UI once, then it drives itself.
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    environment:
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      GENERIC_TIMEZONE: "UTC"
+      RELAY_API_BASE_URL: "http://api:8000"
+      RELAY_ADMIN_TOKEN: ${RELAY_ADMIN_TOKEN:?set RELAY_ADMIN_TOKEN}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-}
+    ports:
+      - "127.0.0.1:5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+
+  # Private ingress: an outbound-only Cloudflare Tunnel that fronts the
+  # API for reviewers/operators. No public load balancer, no open ports.
+  # Enable with --profile tunnel and a TUNNEL_TOKEN.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN (or drop the tunnel profile)}
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128m
+
+volumes:
+  n8n_data:

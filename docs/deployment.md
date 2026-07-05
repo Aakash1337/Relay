@@ -11,6 +11,11 @@ The README's "Getting started" is the *development* setup: auto-reload,
 throwaway database, mail caught by Mailpit. This doc is what changes
 when the thing has to stay up.
 
+This is the manual, host-agnostic version. The containerized version of
+the same topology — and the Terraform that provisions it on GCP with a
+managed database, Secret Manager, and a Cloudflare Tunnel in front of
+the API — lives in [deploy/](../deploy/README.md).
+
 ## The shape of it
 
 One codebase, four processes, one database. There is no build step and
