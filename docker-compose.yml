@@ -1,7 +1,7 @@
 # RELAY — DIY / zero-cost development stack (roadmap appendix).
 # Infra only: the API and worker run on the host via `uv` for a fast dev loop.
 #
-#   just infra-up   → Postgres + Redis + Mailpit
+#   just infra-up   → Postgres + Mailpit
 #   just stack-up   → everything incl. the n8n workflow spine
 #
 # Nothing here is production configuration. Client production runs on a
@@ -20,16 +20,6 @@ services:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U relay -d relay"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10

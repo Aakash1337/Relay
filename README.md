@@ -102,7 +102,7 @@ just sync                 # install dependencies
 cp .env.example .env      # then edit values
 
 # database, pick one:
-just infra-up             # Docker: Postgres + Redis + Mailpit
+just infra-up             # Docker: Postgres + Mailpit
 just db-local-start       # no Docker: throwaway local cluster on :5433
 
 just db-migrate           # schema + triggers + RLS + rule seeding
@@ -120,6 +120,11 @@ just stack-up             # optional: adds the n8n spine on :5678
 trace. Nothing real can send out of the box: real mode sits behind a
 config switch, an allowlist, operator attestations, and the SES
 sandbox, all of which have to agree.
+
+When you want to run it somewhere real rather than on a laptop,
+[docs/deployment.md](docs/deployment.md) covers the process layout,
+the port map, scheduling the workers, the reverse-proxy and TLS
+requirements, and the SES wiring.
 
 ## Tests
 
