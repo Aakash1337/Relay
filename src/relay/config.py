@@ -200,6 +200,31 @@ class Settings(BaseSettings):
     #: digest on reads. Set false once no pre-pepper rows remain (e.g.
     #: after a fresh migrate/reset) — writes are always peppered.
     email_hash_legacy_lookup: bool = True
+    #: Region-specific lawful-basis rules (the seam the Legal/Data
+    #: Preflight's jurisdiction matrix will populate). JSON mapping of
+    #: region -> allowed lawful bases, e.g.
+    #: {"EU": ["consent", "test_consent", "synthetic"]}.
+    #: Empty = no region rules (today's placeholder behavior). When rules
+    #: ARE configured, a region absent from the map is BLOCKED —
+    #: over-blocking is the safe direction, an unlisted region is an
+    #: uncleared one.
+    region_basis_rules: str = ""
+
+    def region_rules(self) -> dict[str, frozenset[str]]:
+        """Parsed RELAY_REGION_BASIS_RULES; {} when unset. Malformed JSON
+        fails loudly — a silently ignored compliance rule is worse than a
+        crash."""
+        import json
+
+        if not self.region_basis_rules.strip():
+            return {}
+        parsed = json.loads(self.region_basis_rules)
+        if not isinstance(parsed, dict):
+            raise ValueError("RELAY_REGION_BASIS_RULES must be a JSON object")
+        return {
+            str(region): frozenset(str(b) for b in bases)
+            for region, bases in parsed.items()
+        }
 
     def pilot_recipient_addresses(self) -> tuple[str, ...]:
         """The parsed pilot allowlist (comma-separated, trimmed, no blanks)."""

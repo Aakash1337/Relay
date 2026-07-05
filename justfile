@@ -101,6 +101,10 @@ evals which="both":
 demo:
     uv run python scripts/demo_journey.py
 
+# Throughput benchmark  (usage: just bench 2 10 4 = tenants leads concurrency)
+bench tenants="2" leads="10" concurrency="4":
+    uv run python scripts/benchmark_throughput.py --tenants {{tenants}} --leads {{leads}} --concurrency {{concurrency}}
+
 # Seed a synthetic campaign (Faker prospects incl. edge cases) and run it
 seed n="20":
     uv run python scripts/seed_synthetic.py {{n}}
