@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" font-family="Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555555"/>
+    </marker>
+  </defs>
+
+  <!-- callers row -->
+  <rect x="20" y="20" width="270" height="58" rx="8" fill="#f5f5f5" stroke="#999999" stroke-width="1.5"/>
+  <text x="155" y="44" text-anchor="middle" fill="#1a1a1a">Scheduler (n8n or cron)</text>
+  <text x="155" y="61" text-anchor="middle" fill="#555555" font-size="11">just calls tick endpoints on a timer</text>
+
+  <rect x="320" y="20" width="270" height="58" rx="8" fill="#f5f5f5" stroke="#999999" stroke-width="1.5"/>
+  <text x="455" y="44" text-anchor="middle" fill="#1a1a1a">Browser pages</text>
+  <text x="455" y="61" text-anchor="middle" fill="#555555" font-size="11">/review &#183; /ops &#183; /admin (plain HTML)</text>
+
+  <rect x="620" y="20" width="270" height="58" rx="8" fill="#f5f5f5" stroke="#999999" stroke-width="1.5"/>
+  <text x="755" y="44" text-anchor="middle" fill="#1a1a1a">API clients</text>
+  <text x="755" y="61" text-anchor="middle" fill="#555555" font-size="11">one key per tenant</text>
+
+  <line x1="155" y1="78" x2="155" y2="118" stroke="#555555" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="455" y1="78" x2="455" y2="118" stroke="#555555" stroke-width="1.5" marker-end="url(#a)"/>
+  <path d="M 755 78 L 755 100 L 590 100 L 590 118" stroke="#555555" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+
+  <!-- FastAPI container -->
+  <rect x="20" y="120" width="580" height="190" rx="10" fill="#dae8fc" stroke="#6c8ebf" stroke-width="2"/>
+  <text x="40" y="144" fill="#1a1a1a" font-weight="bold">FastAPI backend</text>
+
+  <rect x="40" y="158" width="160" height="52" rx="6" fill="#ffffff" stroke="#6c8ebf" stroke-width="1.2"/>
+  <text x="120" y="180" text-anchor="middle" fill="#1a1a1a">Auth + routes</text>
+  <text x="120" y="196" text-anchor="middle" fill="#555555" font-size="11">tenant keys, admin token</text>
+
+  <rect x="216" y="158" width="160" height="52" rx="6" fill="#ffffff" stroke="#82b366" stroke-width="1.2"/>
+  <text x="296" y="180" text-anchor="middle" fill="#1a1a1a">Human gate</text>
+  <text x="296" y="196" text-anchor="middle" fill="#555555" font-size="11">approval never sends</text>
+
+  <rect x="392" y="158" width="188" height="52" rx="6" fill="#ffffff" stroke="#d79b00" stroke-width="1.2"/>
+  <text x="486" y="180" text-anchor="middle" fill="#1a1a1a">Send-eligibility gate</text>
+  <text x="486" y="196" text-anchor="middle" fill="#555555" font-size="11">suppression, caps, quotas&#8230;</text>
+
+  <rect x="40" y="228" width="270" height="52" rx="6" fill="#ffffff" stroke="#6c8ebf" stroke-width="1.2"/>
+  <text x="175" y="250" text-anchor="middle" fill="#1a1a1a">Pipeline runner + guardrails</text>
+  <text x="175" y="266" text-anchor="middle" fill="#555555" font-size="11">state machine, iteration/budget/spend caps</text>
+
+  <rect x="326" y="228" width="254" height="52" rx="6" fill="#ffffff" stroke="#6c8ebf" stroke-width="1.2"/>
+  <text x="453" y="250" text-anchor="middle" fill="#1a1a1a">Metrics, alerts, economics</text>
+  <text x="453" y="266" text-anchor="middle" fill="#555555" font-size="11">derived on read, Prometheus export</text>
+
+  <!-- model seam -->
+  <rect x="630" y="120" width="310" height="190" rx="10" fill="#e1d5e7" stroke="#9673a6" stroke-width="2"/>
+  <text x="650" y="144" fill="#1a1a1a" font-weight="bold">Model seam (two tiers)</text>
+  <text x="650" y="172" fill="#333333">&#8226; offline stub &#8212; what tests run on</text>
+  <text x="650" y="196" fill="#333333">&#8226; local: Ollama / vLLM, open weights</text>
+  <text x="650" y="220" fill="#333333">&#8226; Gemini API &#8212; what the prototype ran</text>
+  <text x="650" y="244" fill="#333333">&#8226; any other hosted API</text>
+  <text x="650" y="278" fill="#555555" font-size="11">swap = two lines of .env &#183; untrusted text is</text>
+  <text x="650" y="293" fill="#555555" font-size="11">escaped + tagged before it reaches a prompt</text>
+
+  <line x1="600" y1="254" x2="628" y2="254" stroke="#555555" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- workers -->
+  <rect x="20" y="350" width="580" height="110" rx="10" fill="#d5e8d4" stroke="#82b366" stroke-width="2"/>
+  <text x="40" y="374" fill="#1a1a1a" font-weight="bold">Internal workers (no HTTP surface)</text>
+
+  <rect x="40" y="388" width="170" height="52" rx="6" fill="#ffffff" stroke="#82b366" stroke-width="1.2"/>
+  <text x="125" y="410" text-anchor="middle" fill="#1a1a1a">Send worker</text>
+  <text x="125" y="426" text-anchor="middle" fill="#555555" font-size="11">rechecks everything, sends</text>
+
+  <rect x="226" y="388" width="170" height="52" rx="6" fill="#ffffff" stroke="#82b366" stroke-width="1.2"/>
+  <text x="311" y="410" text-anchor="middle" fill="#1a1a1a">Event poller</text>
+  <text x="311" y="426" text-anchor="middle" fill="#555555" font-size="11">bounces &#8594; suppression</text>
+
+  <rect x="412" y="388" width="170" height="52" rx="6" fill="#ffffff" stroke="#82b366" stroke-width="1.2"/>
+  <text x="497" y="410" text-anchor="middle" fill="#1a1a1a">Retention + recovery</text>
+  <text x="497" y="426" text-anchor="middle" fill="#555555" font-size="11">purge, crash self-heal</text>
+
+  <line x1="175" y1="310" x2="175" y2="348" stroke="#555555" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- AWS -->
+  <rect x="630" y="350" width="310" height="110" rx="10" fill="#ffe6cc" stroke="#d79b00" stroke-width="2"/>
+  <text x="650" y="374" fill="#1a1a1a" font-weight="bold">AWS (the only cloud piece)</text>
+  <text x="650" y="400" fill="#333333">SES sends the mail;</text>
+  <text x="650" y="420" fill="#333333">SNS &#8594; SQS bring back bounces,</text>
+  <text x="650" y="440" fill="#333333">complaints and deliveries (signed)</text>
+
+  <path d="M 125 388 L 125 332 L 614 332 L 614 380 L 628 380" stroke="#555555" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+  <path d="M 630 448 L 311 448 L 311 442" stroke="#555555" stroke-width="1.5" fill="none" stroke-dasharray="5,4" marker-end="url(#a)"/>
+
+  <!-- postgres -->
+  <rect x="20" y="500" width="920" height="110" rx="10" fill="#fff2cc" stroke="#d6b656" stroke-width="2"/>
+  <text x="40" y="526" fill="#1a1a1a" font-weight="bold">PostgreSQL 16 &#8212; storage AND enforcement</text>
+  <text x="40" y="552" fill="#333333">Row-level security walls each tenant off &#183; triggers enforce the lead state machine, suppression and dry-run rules</text>
+  <text x="40" y="572" fill="#333333">unique constraints make duplicate sends impossible &#183; the audit log is append-only &#183; advisory locks keep send caps race-proof</text>
+  <text x="40" y="592" fill="#555555" font-size="11">Every box above reads and writes through this layer; nothing bypasses it.</text>
+
+  <line x1="311" y1="460" x2="311" y2="498" stroke="#555555" stroke-width="1.5" marker-end="url(#a)"/>
+  <path d="M 600 290 L 612 290 L 612 480 L 480 480 L 480 498" stroke="#555555" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+</svg>
