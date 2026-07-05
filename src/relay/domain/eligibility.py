@@ -38,6 +38,10 @@ from relay.senders import real_sender_status
 
 log = get_logger(__name__)
 
+#: Checks whose failure is TEMPORAL (pacing), not a property of the send:
+#: the worker defers the job to a later tick instead of blocking it.
+DEFERRABLE_CHECKS = frozenset({"mailbox_hourly_pace_ok", "send_spacing_ok"})
+
 
 @dataclass(frozen=True)
 class EligibilityCheck:
@@ -70,6 +74,7 @@ def evaluate(
     draft: OutreachDraft,
     mode: str,
     exclude_send_job_id: uuid.UUID | None = None,
+    at_execution: bool = False,
 ) -> EligibilityResult:
     """Run the full §10 checklist for one prospective send.
 
@@ -77,6 +82,12 @@ def evaluate(
     execution time the job itself IS the idempotency record, so it must not
     count as a duplicate of itself. The worker passes its claimed job id
     here rather than post-filtering the result by check name.
+
+    ``at_execution`` additionally runs the pacing checks (hourly cap,
+    send spacing). They apply only when a send is about to leave — a
+    paced-out moment says nothing about whether the job may QUEUE, and a
+    queue-time pacing failure would terminally block a lead over a purely
+    temporal condition.
     """
     checks: list[EligibilityCheck] = []
 
@@ -223,21 +234,92 @@ def evaluate(
         # 'failed' rows with started_at set are crash-recovered mid-send
         # jobs ("outcome unknown" — the mail may have left), so they count;
         # pre-send failures never acquire a committed started_at.
+        now = datetime.now(tz=UTC)
         recent_real_sends = session.execute(
             select(func.count()).where(
                 SendJob.tenant_id == lead.tenant_id,
                 SendJob.mode == "real",
                 SendJob.status.in_(("sending", "sent", "failed")),
                 SendJob.started_at.isnot(None),
-                SendJob.started_at >= datetime.now(tz=UTC) - timedelta(hours=24),
+                SendJob.started_at >= now - timedelta(hours=24),
             )
         ).scalar_one()
+        # Warmup ramp: a young sending identity earns volume gradually.
+        # Effective cap on day N since the tenant's first real send is
+        # min(configured cap, start + increment·N); disabled when start=0.
+        effective_cap = settings.real_send_daily_cap
+        cap_detail = f"cap {settings.real_send_daily_cap}"
+        if settings.warmup_daily_start > 0:
+            first_send = session.execute(
+                select(func.min(SendJob.started_at)).where(
+                    SendJob.tenant_id == lead.tenant_id,
+                    SendJob.mode == "real",
+                    SendJob.started_at.isnot(None),
+                )
+            ).scalar_one()
+            day = 0 if first_send is None else max((now - first_send).days, 0)
+            ramp = settings.warmup_daily_start + settings.warmup_daily_increment * day
+            if ramp < effective_cap:
+                effective_cap = ramp
+                cap_detail = (
+                    f"warmup day {day} cap {ramp} "
+                    f"(configured {settings.real_send_daily_cap})"
+                )
         check(
             "mailbox_active_below_cap",
-            recent_real_sends < settings.real_send_daily_cap,
-            f"{recent_real_sends} real sends in 24h "
-            f"(cap {settings.real_send_daily_cap})",
+            recent_real_sends < effective_cap,
+            f"{recent_real_sends} real sends in 24h ({cap_detail})",
         )
+        if at_execution:
+            # Pacing (deferrable — see DEFERRABLE_CHECKS): scoped to the
+            # sending mailbox, evaluated under the same advisory lock so
+            # concurrent workers cannot both pass at the pace boundary.
+            mailbox_match = (
+                SendJob.mailbox_id.is_(None)
+                if campaign.mailbox_id is None
+                else SendJob.mailbox_id == campaign.mailbox_id
+            )
+            if settings.real_send_hourly_cap > 0:
+                hourly = session.execute(
+                    select(func.count()).where(
+                        SendJob.tenant_id == lead.tenant_id,
+                        SendJob.mode == "real",
+                        mailbox_match,
+                        SendJob.status.in_(("sending", "sent", "failed")),
+                        SendJob.started_at.isnot(None),
+                        SendJob.started_at >= now - timedelta(hours=1),
+                    )
+                ).scalar_one()
+                check(
+                    "mailbox_hourly_pace_ok",
+                    hourly < settings.real_send_hourly_cap,
+                    f"{hourly} real sends in the last hour "
+                    f"(hourly cap {settings.real_send_hourly_cap})",
+                )
+            if settings.real_send_min_spacing_seconds > 0:
+                last_send = session.execute(
+                    select(func.max(SendJob.started_at)).where(
+                        SendJob.tenant_id == lead.tenant_id,
+                        SendJob.mode == "real",
+                        mailbox_match,
+                        SendJob.started_at.isnot(None),
+                    )
+                ).scalar_one()
+                gap_ok = (
+                    last_send is None
+                    or (now - last_send).total_seconds()
+                    >= settings.real_send_min_spacing_seconds
+                )
+                check(
+                    "send_spacing_ok",
+                    gap_ok,
+                    "spacing satisfied"
+                    if gap_ok
+                    else (
+                        f"last send {int((now - last_send).total_seconds())}s ago "
+                        f"(minimum {settings.real_send_min_spacing_seconds}s)"
+                    ),
+                )
         window_start = datetime.now(tz=UTC) - timedelta(
             days=settings.bounce_complaint_window_days
         )

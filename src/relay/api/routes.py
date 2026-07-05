@@ -742,5 +742,8 @@ def unsubscribe_submit(token: str = "") -> HTMLResponse:
 def send_worker_tick() -> schemas.WorkerTickResponse:
     stats = process_pending()
     return schemas.WorkerTickResponse(
-        sent=stats.sent, blocked=stats.blocked, failed=stats.failed
+        sent=stats.sent,
+        blocked=stats.blocked,
+        failed=stats.failed,
+        deferred=stats.deferred,
     )

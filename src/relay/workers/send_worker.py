@@ -42,6 +42,7 @@ class WorkerStats:
     sent: int = 0
     blocked: int = 0
     failed: int = 0
+    deferred: int = 0
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -77,6 +78,7 @@ def process_pending(max_jobs: int = 100) -> WorkerStats:
         sent=stats.sent,
         blocked=stats.blocked,
         failed=stats.failed,
+        deferred=stats.deferred,
     )
     return stats
 
@@ -127,8 +129,22 @@ def _process_one(tenant_id: uuid.UUID, stats: WorkerStats) -> bool:
                 draft=draft,
                 mode=job.mode,
                 exclude_send_job_id=job.id,
+                at_execution=True,
             )
             if not result.eligible:
+                failure_names = {c.name for c in result.failures}
+                if failure_names <= eligibility.DEFERRABLE_CHECKS:
+                    # Pacing, not ineligibility: the job stays queued,
+                    # untouched, for a later tick. Jobs are FIFO per
+                    # tenant, so stop this tenant's pass — everything
+                    # behind this job is paced out too.
+                    stats.deferred += 1
+                    log.info(
+                        "send deferred by pacing",
+                        send_job_id=str(job.id),
+                        failures=sorted(failure_names),
+                    )
+                    return False
                 detail = result.failure_summary()
                 job.status = "blocked"
                 job.error = detail
@@ -285,6 +301,7 @@ def main() -> None:
         sent=stats.sent,
         blocked=stats.blocked,
         failed=stats.failed,
+        deferred=stats.deferred,
     )
 
 

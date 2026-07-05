@@ -227,6 +227,7 @@ class WorkerTickResponse(BaseModel):
     sent: int
     blocked: int
     failed: int
+    deferred: int = 0
 
 
 # ── Rubric review (Phase 1A human gate) ─────────────────────────────────────

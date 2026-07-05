@@ -85,6 +85,18 @@ class Settings(BaseSettings):
     real_send_daily_cap: int = Field(default=5, ge=0)
     bounce_complaint_window_days: int = Field(default=7, ge=1)
     max_bounces_complaints_in_window: int = Field(default=2, ge=0)
+    # ── Deliverability pacing (Phase 3) — each is OFF (0) by default ───────
+    # Pacing failures DEFER a queued job to a later worker tick; they never
+    # block it terminally (unlike the caps above, which are §6 hard stops).
+    #: Rolling-hour cap on real sends per (tenant, mailbox); 0 disables.
+    real_send_hourly_cap: int = Field(default=0, ge=0)
+    #: Minimum seconds between two real sends from one mailbox; 0 disables.
+    real_send_min_spacing_seconds: int = Field(default=0, ge=0)
+    #: Warmup ramp: on day N since the tenant's first real send the
+    #: effective daily cap is min(real_send_daily_cap, start + increment*N).
+    #: start=0 disables the ramp entirely.
+    warmup_daily_start: int = Field(default=0, ge=0)
+    warmup_daily_increment: int = Field(default=0, ge=0)
     # SNS event ingestion (webhook token and/or SQS polling).
     ses_webhook_token: SecretStr | None = None
     sqs_queue_url: str = ""
