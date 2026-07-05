@@ -352,12 +352,13 @@ RELAY is a multi-container stack (workflow engine, tool servers, database, queue
 - **Will the first pilot use real prospect data? Will it send real mail?**
 - **Allowed lead sources** (the Lead Source Register, populated).
 - **Sending provider** that permits the intended use case, and who owns domain/mailbox reputation risk.
-- **Suppression scope** — per-tenant or global.
+- **Suppression scope** — per-tenant or global. *(Decided 2026-07-05: per-tenant default; global scope stays honored across every tenant — over-suppression is the safe direction — but creating a global entry is admin-only; RLS rejects it from the application role.)*
 - **Cross-client feedback data** — shareable or tenant-only.
 - **n8n licensing** fit for the client-hosted / client-credential model.
 - **Local tool-calling reliability** — before trusting the local tier with tools unattended.
 - **Single-GPU concurrency ceiling** and when the hot path must move.
 - **Target cost per qualified meeting**, and the metric that kills the project.
+- **Multi-step sequences** — deferred (2026-07-05) pending feature design: step-advance triggers (delay vs. no-reply), per-step human approval (§10 approves an exact message version), and mid-sequence cancellation on reply/unsubscribe/bounce. Until that design exists the send path deliberately pins `sequence_step = 1` and the code-level idempotency check is hardcoded to step 1 (`domain/eligibility.py`); it must be generalized before any step-2 ships. The DB uniqueness constraint already includes `sequence_step` and needs no change.
 
 ---
 
