@@ -219,6 +219,7 @@ def _process_one(
                 mode=job.mode,
                 exclude_send_job_id=job.id,
                 at_execution=True,
+                sequence_step=job.sequence_step,
             )
             if not result.eligible:
                 failure_names = {c.name for c in result.failures}

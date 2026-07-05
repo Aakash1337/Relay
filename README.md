@@ -313,9 +313,11 @@ CI (GitHub Actions) runs ruff + the full test suite against a Postgres
 - **Real-prospect sending** — gated behind the §6 revisit criteria in
   [the sending-provider decision record](docs/decisions/sending-provider.md);
   the Smartlead enrollment adapter is deliberately deferred until then.
-- **Multi-step sequences** — the send path currently pins
-  `sequence_step = 1`; the duplicate/idempotency check must be
-  generalized before step 2 exists.
+- ~~Multi-step sequences~~ — implemented: campaigns take a
+  `sequence_length` and `sequence_delay_hours`; step N+1 re-enters the
+  pipeline loop after the no-reply delay, drafts its own version, and
+  needs its own human approval; a reply, bounce, unsubscribe, or
+  suppression cancels the remainder structurally.
 - **Production posture** (the operator-gated remainder, see
   [docs/phase4-readiness.md](docs/phase4-readiness.md)) — a real
   throughput target + benchmark, per-tenant domain/mailbox verification

@@ -160,6 +160,7 @@ class LeadFactory:
         dry_run: bool = True,
         simulated_replies: bool = True,
         mailbox_id: str | None = None,
+        **columns,
     ) -> uuid.UUID:
         with tenant_session(self.tenant_id) as session:
             campaign = Campaign(
@@ -168,6 +169,7 @@ class LeadFactory:
                 dry_run=dry_run,
                 simulated_replies_enabled=simulated_replies,
                 mailbox_id=mailbox_id,
+                **columns,
             )
             session.add(campaign)
             session.flush()

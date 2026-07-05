@@ -177,6 +177,10 @@ class Campaign(Base):
             "status IN ('draft','active','paused','completed')",
             name="ck_campaigns_status",
         ),
+        CheckConstraint("sequence_length >= 1", name="ck_campaigns_sequence_length"),
+        CheckConstraint(
+            "sequence_delay_hours >= 0", name="ck_campaigns_sequence_delay"
+        ),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -197,6 +201,18 @@ class Campaign(Base):
     )
     mailbox_id: Mapped[str | None] = mapped_column(Text)
     daily_volume_cap: Mapped[int | None] = mapped_column(Integer)
+    #: Multi-step sequences (§17, un-deferred): total steps in the
+    #: campaign's sequence. 1 = single-shot, the default — nothing about
+    #: existing campaigns changes.
+    sequence_length: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1")
+    )
+    #: No-reply delay before the NEXT step may draft. Cancellation is
+    #: structural: a reply, bounce, or unsubscribe moves the lead out of
+    #: 'sent', so the advance step never fires for them.
+    sequence_delay_hours: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("72")
+    )
     status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default=text("'active'")
     )
