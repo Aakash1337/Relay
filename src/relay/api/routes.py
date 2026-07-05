@@ -736,6 +736,16 @@ def review_page() -> HTMLResponse:
     return HTMLResponse(REVIEW_PAGE)
 
 
+@router.get("/admin", include_in_schema=False)
+def admin_page() -> HTMLResponse:
+    """The admin console: a static page over the admin API. Serving it
+    is harmless without the admin token — every action it can take is
+    token-gated server-side, exactly like curl."""
+    from relay.api.admin_ui import ADMIN_PAGE
+
+    return HTMLResponse(ADMIN_PAGE)
+
+
 # ── Economics gate (Phase 1A) ────────────────────────────────────────────────
 
 

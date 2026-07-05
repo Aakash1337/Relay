@@ -9,6 +9,12 @@ booking. It is designed so that an unlawful, suppressed, or duplicate
 send is *structurally impossible* — enforced by the database, not by
 good intentions.
 
+> **Status: prototype (2026-07-05).** All roadmap phases are
+> code-complete; the deliberately-skipped operator/legal items and the
+> go-to-production checklist are recorded in
+> [docs/prototype-status.md](docs/prototype-status.md) — read that
+> first if you are picking this project back up.
+
 This repository currently implements **Phase 0 — Foundations &
 Scaffolding**, **Phase 1A — Synthetic dry-run MVP**, **Phase 1B —
 Real-data, no-send pilot**, **Phase 2 — Reliability, observability &
@@ -155,6 +161,15 @@ items, plus the three deliberately parked decisions — is recorded in
 The exit-gate ledger — what is pinned by tests versus what needs an
 operator decision (throughput target, per-tenant §6 posture) — is
 [docs/phase4-readiness.md](docs/phase4-readiness.md).
+
+Prototype utilities on top of the phases:
+
+| Capability | Where |
+| --- | --- |
+| **Multi-step sequences**: `sequence_length`/`sequence_delay_hours` per campaign; step N+1 re-enters the pipeline loop after the no-reply delay, drafts its own version, and needs its own §10 approval; reply/bounce/unsubscribe/suppression cancel structurally | `pipeline/runner.py`, `domain/states.py` |
+| **Region-rules seam**: `RELAY_REGION_BASIS_RULES` (JSON region → allowed lawful bases) enforced at the eligibility gate; empty = permissive placeholder, and once rules exist an unlisted region is blocked. The Legal/Data Preflight's jurisdiction matrix becomes a config edit, not code | `config.py`, `domain/eligibility.py` |
+| **Throughput benchmark**: `uv run python scripts/benchmark_throughput.py --tenants N --leads M --concurrency C` — per-phase wall-clock and leads/sec against real Postgres, the instrument for the Phase 4 throughput gate | `scripts/benchmark_throughput.py` |
+| **Admin console**: `/admin` — self-contained page over the admin API (onboard, rotate key, attest sender identity, global suppression); adds convenience, no capability — every action is token-gated server-side | `api/admin_ui.py` |
 
 ---
 
