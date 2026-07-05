@@ -43,6 +43,11 @@ from relay.economics import campaign_economics
 from relay.guardrails.harness import GuardrailViolation
 from relay.hashing import email_domain, hash_api_key, hash_email
 from relay.ingest.ses_events import EventRejected, process_sns_envelope
+from relay.ingest.unsubscribe import (
+    UnsubscribeRejected,
+    process_unsubscribe,
+    verify_token,
+)
 from relay.logs import get_logger
 from relay.observability import evaluate_alerts, prometheus_text, tenant_metrics
 from relay.pipeline.runner import PipelineRunner
@@ -676,6 +681,54 @@ async def ses_webhook(request: Request, token: str = "") -> dict[str, int]:
         "deliveries": stats.deliveries,
         "ignored": stats.ignored,
     }
+
+
+# ── One-click unsubscribe (RFC 8058) — token-authenticated, no API key ──────
+
+_UNSUBSCRIBE_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unsubscribe</title></head>
+<body style="font-family: system-ui, sans-serif; max-width: 32rem;
+             margin: 4rem auto; padding: 0 1rem;">
+<h1 style="font-size:1.3rem">Unsubscribe</h1>
+<p>Click the button below to stop receiving emails from this sender.</p>
+<form method="post"><button type="submit"
+  style="padding:.6rem 1.2rem; font-size:1rem; cursor:pointer;">
+  Unsubscribe</button></form>
+</body></html>"""
+
+_UNSUBSCRIBED_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unsubscribed</title></head>
+<body style="font-family: system-ui, sans-serif; max-width: 32rem;
+             margin: 4rem auto; padding: 0 1rem;">
+<h1 style="font-size:1.3rem">You have been unsubscribed</h1>
+<p>You will not receive further emails from this sender.</p>
+</body></html>"""
+
+
+@router.get("/unsubscribe", include_in_schema=False)
+def unsubscribe_page(token: str = "") -> HTMLResponse:
+    """Human-facing landing page. NEVER mutates state — mail clients and
+    security scanners prefetch GET links; only the POST acts."""
+    try:
+        verify_token(token)
+    except UnsubscribeRejected as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return HTMLResponse(_UNSUBSCRIBE_PAGE)
+
+
+@router.post("/unsubscribe", include_in_schema=False)
+def unsubscribe_submit(token: str = "") -> HTMLResponse:
+    """The acting endpoint: an RFC 8058 one-click POST from the mail
+    provider, or the human confirming on the GET page. Idempotent."""
+    try:
+        process_unsubscribe(token)
+    except UnsubscribeRejected as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return HTMLResponse(_UNSUBSCRIBED_PAGE)
 
 
 # ── Internal: spine-triggered worker tick (admin token, not tenant key) ─────

@@ -20,6 +20,7 @@ from typing import Any
 from relay.config import get_settings
 from relay.db.models import Lead, OutreachDraft, SendJob
 from relay.hashing import hash_email
+from relay.ingest.unsubscribe import build_token
 from relay.logs import get_logger
 from relay.senders.base import RealSendUnavailable
 
@@ -87,10 +88,13 @@ class SESSender:
         # List-Unsubscribe can carry a mailto and/or an https URL. RFC 8058
         # one-click (List-Unsubscribe-Post) is only valid when an https URL
         # is present — a mailto cannot honor a one-click POST — so we
-        # advertise One-Click ONLY when a URL is configured.
+        # advertise One-Click ONLY when a URL is configured. The URL is
+        # per-send: a signed token identifying (tenant, lead, job) that the
+        # /unsubscribe endpoint verifies before honoring.
         targets = []
         if self._unsubscribe_url:
-            targets.append(f"<{self._unsubscribe_url}>")
+            token = build_token(lead.tenant_id, lead.id, job.id)
+            targets.append(f"<{self._unsubscribe_url}?token={token}>")
         if self._unsubscribe_mailto:
             targets.append(f"<mailto:{self._unsubscribe_mailto}>")
         headers = []

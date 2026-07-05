@@ -111,7 +111,15 @@ _PIPELINE_TRANSITIONS: dict[LeadState, frozenset[LeadState]] = {
     ),
     # send_queued → send_blocked: execution-time eligibility failure
     LeadState.SEND_QUEUED: frozenset({LeadState.SENT, LeadState.SEND_BLOCKED}),
-    LeadState.SENT: frozenset({LeadState.BOUNCE_RECEIVED, LeadState.REPLY_RECEIVED}),
+    # sent → unsubscribed: a one-click unsubscribe (RFC 8058) arrives
+    # without a reply — no triage step ever happens for it.
+    LeadState.SENT: frozenset(
+        {
+            LeadState.BOUNCE_RECEIVED,
+            LeadState.REPLY_RECEIVED,
+            LeadState.UNSUBSCRIBED,
+        }
+    ),
     LeadState.REPLY_RECEIVED: frozenset({LeadState.TRIAGE_PENDING}),
     LeadState.TRIAGE_PENDING: frozenset(
         {

@@ -541,3 +541,32 @@ def test_daily_cap_holds_under_concurrent_workers(
     with tenant_session(tenant_id) as session:
         statuses = sorted(session.execute(select(SendJob.status)).scalars().all())
         assert statuses == ["blocked", "sent", "sent"]
+
+
+def test_one_click_url_carries_a_verifiable_per_job_token(
+    tenant_a, factory_a, pilot_env, monkeypatch
+):
+    """The https unsubscribe target is per-send: the embedded token must
+    verify and identify exactly this tenant, lead, and job."""
+    from relay.ingest.unsubscribe import verify_token
+
+    tenant_id, _ = tenant_a
+    monkeypatch.setenv("RELAY_UNSUBSCRIBE_URL", "https://relay.example/unsubscribe")
+    get_settings.cache_clear()
+    reset_senders()
+    _sender_cache["ses"] = SESSender(client=pilot_env)
+    lead_id = _pilot_lead(factory_a)
+    _walk_to_queue(tenant_id, lead_id)
+    process_pending()
+
+    headers = pilot_env.requests[0]["Content"]["Simple"]["Headers"]
+    lu = next(h["Value"] for h in headers if h["Name"] == "List-Unsubscribe")
+    token = lu.split("?token=", 1)[1].split(">", 1)[0]
+    token_tenant, token_lead, token_job = verify_token(token)
+    with tenant_session(tenant_id) as session:
+        job = session.execute(select(SendJob)).scalar_one()
+        assert (token_tenant, token_lead, token_job) == (
+            tenant_id,
+            lead_id,
+            job.id,
+        )
