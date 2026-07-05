@@ -9,7 +9,14 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select
 
 from relay.db.engine import tenant_session
-from relay.db.models import Lead, PipelineRun, Reply, SendJob, Suppression
+from relay.db.models import (
+    DraftReview,
+    Lead,
+    PipelineRun,
+    Reply,
+    SendJob,
+    Suppression,
+)
 
 #: The rolling window for rate-style metrics.
 WINDOW = timedelta(hours=24)
@@ -30,6 +37,11 @@ class TenantMetrics:
     replies_window: int = 0
     sent_window: int = 0
     suppression_entries: int = 0
+    #: New suppression entries in the window, per reason — the reputation
+    #: signal (hard_bounce / complaint / unsubscribe).
+    suppressions_window: dict[str, int] = field(default_factory=dict)
+    #: Rubric reviews in the window, per decision — edits-as-signal.
+    reviews_window: dict[str, int] = field(default_factory=dict)
 
     @property
     def run_error_rate(self) -> float | None:
@@ -48,6 +60,28 @@ class TenantMetrics:
         if not self.sent_window:
             return None
         return self.replies_window / self.sent_window
+
+    @property
+    def bounce_rate(self) -> float | None:
+        """Hard bounces per send in the window (reputation)."""
+        if not self.sent_window:
+            return None
+        return self.suppressions_window.get("hard_bounce", 0) / self.sent_window
+
+    @property
+    def complaint_rate(self) -> float | None:
+        if not self.sent_window:
+            return None
+        return self.suppressions_window.get("complaint", 0) / self.sent_window
+
+    @property
+    def edit_rate(self) -> float | None:
+        """Share of window reviews where the human had to edit — the
+        edits-as-signal number that steers prompt iteration."""
+        total = sum(self.reviews_window.values())
+        if not total:
+            return None
+        return self.reviews_window.get("approved_with_edits", 0) / total
 
 
 def tenant_metrics(tenant_id: uuid.UUID) -> TenantMetrics:
@@ -86,6 +120,20 @@ def tenant_metrics(tenant_id: uuid.UUID) -> TenantMetrics:
         suppression = session.execute(
             select(func.count()).select_from(Suppression)
         ).scalar_one()
+        suppressions_window = dict(
+            session.execute(
+                select(Suppression.reason, func.count())
+                .where(Suppression.created_at >= cutoff)
+                .group_by(Suppression.reason)
+            ).all()
+        )
+        reviews_window = dict(
+            session.execute(
+                select(DraftReview.decision, func.count())
+                .where(DraftReview.created_at >= cutoff)
+                .group_by(DraftReview.decision)
+            ).all()
+        )
 
     return TenantMetrics(
         tenant_id=tenant_id,
@@ -97,6 +145,8 @@ def tenant_metrics(tenant_id: uuid.UUID) -> TenantMetrics:
         replies_window=replies_window,
         sent_window=sent_window,
         suppression_entries=suppression,
+        suppressions_window=suppressions_window,
+        reviews_window=reviews_window,
     )
 
 
@@ -129,5 +179,15 @@ def prometheus_text(metrics: TenantMetrics) -> str:
         f'relay_sent_window{{tenant="{t}"}} {metrics.sent_window}',
         "# TYPE relay_suppression_entries gauge",
         f'relay_suppression_entries{{tenant="{t}"}} {metrics.suppression_entries}',
+        "# TYPE relay_suppressions_window counter",
+        *(
+            f'relay_suppressions_window{{tenant="{t}",reason="{r}"}} {n}'
+            for r, n in sorted(metrics.suppressions_window.items())
+        ),
+        "# TYPE relay_reviews_window counter",
+        *(
+            f'relay_reviews_window{{tenant="{t}",decision="{d}"}} {n}'
+            for d, n in sorted(metrics.reviews_window.items())
+        ),
     ]
     return "\n".join(lines) + "\n"
