@@ -334,3 +334,103 @@ You're ramped when you can do these without the repo open:
    single static credential; alerting is webhook-or-logs, no pager
    integration; n8n's value is thin at current scale; the SQS poller
    short-polls. Knowing the warts is part of owning the system.
+
+## Part 8 — changing the code (from one-line tweaks to full rewrites)
+
+Understanding the system and changing it are different skills. This
+part is the bridge. The one meta-rule: in this codebase, most
+meaningful changes touch *pairs* of places that must stay in sync —
+the recipes below name the pairs so you don't have to discover them by
+breaking CI.
+
+### 8.1 Recipes for common changes
+
+**Add a config setting.** `config.py` (typed field, `RELAY_` prefix,
+safe default) **+** a documented line in `.env.example`. If it's a
+secret, also `deploy/env.prod.example` and a Secret Manager entry in
+`deploy/gcp/secrets.tf`. Trap: pydantic-settings reads `.env` into the
+`Settings` object, not into `os.environ` — if an external library
+(like boto3) needs the variable, it must reach the real environment
+(see `bootstrap.py`).
+
+**Add a column or table.** `db/models.py` **+** a matching idempotent
+`ALTER`/`CREATE` in `db/sql/001_schema_evolution.sql` (create_all only
+covers brand-new tables) **+**, for a new tenant-owned table, RLS
+policy and grants in `004_rls.sql`. Then `just db-migrate` (safe to
+re-run) and a test that touches the new shape. Trap: forgetting 001
+works on a fresh database and fails on every existing one — CI won't
+catch it because CI's database is always fresh; the suite's
+schema-drift test is your friend, run `just test` locally against a
+migrated (not reset) DB.
+
+**Add or change a lead state/transition.** `domain/states.py` is the
+single source of truth — edit the enum and `_TRANSITIONS` only.
+Migration re-seeds `lead_transition_rules`, so the DB trigger enforces
+your new edge automatically after `just db-migrate`. Add the handler in
+`pipeline/runner.py` if the state does work, and extend the exit-gate
+journey test. Trap: editing SQL or the DB directly — the Python map
+always wins on the next migrate.
+
+**Add an eligibility check.** `domain/eligibility.py` (named check,
+clear reason string) **+** decide: blocking or deferrable
+(`DEFERRABLE_CHECKS` — only for pacing-style "not now" conditions)
+**+** an adversarial test that attacks it, not just a happy-path one
+(house convention). If the check guards something irreversible, mirror
+it as a DB trigger in `002_functions.sql`/`003_triggers.sql`.
+
+**Add an endpoint.** `api/routes.py` **+** request/response models in
+`api/schemas.py` **+** the right auth dependency (tenant key vs
+`require_admin`) **+** the right session: `tenant_session` for tenant
+work, `admin_session` ONLY if it genuinely must bypass RLS — that
+choice is a security decision (see
+[security-review-checklist.md](security-review-checklist.md), step 1).
+Add a test in the matching `tests/test_*.py`.
+
+### 8.2 Rewriting whole subsystems
+
+The architecture is deliberately "replaceable code above a load-bearing
+database." Correctness does not live in any one module — it lives in
+(a) the Postgres enforcement layer and (b) the test suite. That means
+you can rewrite entire boxes as long as you keep their contracts, and
+the contracts are short:
+
+| Subsystem | Its contract (what the rest assumes) | Pinned by | Freely replaceable? |
+| --- | --- | --- | --- |
+| Compute / LLM layer (`compute/`, `routing/`) | `ComputeResult` out; untrusted text goes through the tagging seam; no side effects | offline-stub tests, `evals/`, adversarial injection tests | Yes — entire providers are config already |
+| Senders (`senders/`) | `base.py` interface; last-hop recipient/allowlist re-check stays at the provider boundary | `test_phase1c_send.py`, last-hop refusal test, idempotency tests | Yes — this seam exists precisely so SES isn't structural |
+| Pipeline runner (`pipeline/`) | one transaction per step; advance only along `ALLOWED_TRANSITIONS`; stop at wait states; park failures | exit-gate journey, guardrails, recovery/crash tests — and the DB trigger refuses illegal moves even if your rewrite is buggy | Yes — the state machine, not the runner, is the spec |
+| Workers (`workers/`) | one-shot passes; claim via `FOR UPDATE SKIP LOCKED`; full eligibility re-check at execution | idempotency/race tests, adversarial suite | Yes |
+| API (`api/`) | auth model (tenant keys + admin token); schemas; tenant vs admin session choice | endpoint tests | Yes — even swapping FastAPI is contained here |
+| Review/ops/admin UI | plain HTML over the same API | — | Trivially — it's server-rendered HTML with no build step |
+| Scheduler (n8n) | calls tick endpoints on a timer; zero logic | — | Trivially — cron is the documented replacement |
+| CRM mirror (`crm/`) | one-way, best-effort, never on the send path | mirror tests | Yes |
+| **Postgres + `db/sql/`** | **the invariants themselves** | the entire adversarial suite | **No — this is the foundation.** Replacing Postgres means reimplementing RLS, the transition trigger, suppression, and dry-run guards elsewhere, and proving them again. Treat as load-bearing. |
+
+**The rewrite protocol** (how to replace a whole section safely):
+
+1. **Read the contract, not the code.** For the subsystem you're
+   replacing: its interface file, the DB constraints it leans on, and —
+   most importantly — the tests that exercise it. The adversarial
+   tests are the real spec: they encode what must stay true, not how
+   it's currently done.
+2. **Write the decision record first.** A dated file in
+   `docs/decisions/` saying what you're replacing, why, and what the
+   contract is. The three existing records show the shape.
+3. **Rewrite behind the seam.** Keep the interface (or change it
+   deliberately and update every caller in the same PR). The DB layer
+   stays up the whole time and will refuse invalid behavior from your
+   new code — that's your safety net during the rewrite, not an
+   obstacle.
+4. **The acceptance bar is mechanical:** `just test` fully green, and
+   `just test-exit-gate` treated as non-negotiable — those tests ARE
+   the product guarantees. If your rewrite needs an exit-gate test to
+   change, that's a product decision, not a refactor; say so in the PR.
+5. **Schema changes ride along additively** (001 evolution file,
+   idempotent), and anything you deprecated gets deleted, not
+   commented out — the git history is the archive.
+
+If you honor those five steps, there is no part of `src/relay/` you
+cannot rewrite from the ground up. The system was built by phases and
+rewritten in places more than once already; `docs/phase-history.md`
+shows several seams (sender registry, worker concurrency, the pepper
+migration) that were replaced under a green suite.
