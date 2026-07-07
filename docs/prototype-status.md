@@ -33,13 +33,25 @@ None of these block each other; items 1–2 block real-prospect email.
    ([decisions/email-hash-pepper.md](decisions/email-hash-pepper.md)).
 4. **Human security + compliance review** — required by the Phase 3
    exit gate; the automated audits in this repo are input, not a
-   substitute.
+   substitute. Step-by-step:
+   [security-review-checklist.md](security-review-checklist.md).
 5. **Throughput target** — pick a number, then run
    `just bench <tenants> <leads> <concurrency>` on production-like
    hardware. (Reference point: this dev container sustained ~11
    leads/sec full-funnel, offline compute.)
 6. **Calibrate `RELAY_COST_UNIT_USD`** — until then economics endpoints
    report abstract units, not dollars.
+7. **SQS long polling in the event worker** — deferred Phase 3
+   src-level change. `event_worker.py` calls SQS `receive_message` with
+   `WaitTimeSeconds=0` (short polling). Low-stakes today: at the
+   current events tick interval (~300s) that's ~12 receives/hour, deep
+   inside the SQS free tier, so the tick interval — not the poll type —
+   bounds both cost and bounce-to-suppression latency. The change, when
+   done: set `WaitTimeSeconds=20` (long polling) **and** decide the
+   events tick interval under real load — they work together;
+   long-polling alone doesn't reduce suppression latency while the
+   sleep dominates. *Trigger to do it:* real send volume where fast
+   suppression of a bad domain matters.
 
 ## Why you can trust the "not done" list is complete
 
