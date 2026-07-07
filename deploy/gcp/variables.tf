@@ -4,15 +4,15 @@ variable "project_id" {
 }
 
 variable "region" {
-  description = "Region for the VM, Cloud SQL, and Artifact Registry."
+  description = "Region for the VM, Cloud SQL, and Artifact Registry. Default is us-east4: closest GCP region to AWS us-east-2, where RELAY's SES/SNS/SQS stack lives — keeps the cross-cloud hop short and the data residency US-based."
   type        = string
-  default     = "europe-west1"
+  default     = "us-east4"
 }
 
 variable "zone" {
   description = "Zone for the VM."
   type        = string
-  default     = "europe-west1-b"
+  default     = "us-east4-a"
 }
 
 variable "machine_type" {

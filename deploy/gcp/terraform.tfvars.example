@@ -2,8 +2,9 @@
 # never commit a filled-in copy.
 
 project_id = "my-gcp-project"
-region     = "europe-west1"
-zone       = "europe-west1-b"
+# us-east4 sits closest to AWS us-east-2, where the SES/SNS/SQS stack lives.
+region = "us-east4"
+zone   = "us-east4-a"
 
 # machine_type = "e2-medium"
 # db_tier      = "db-custom-1-3840"

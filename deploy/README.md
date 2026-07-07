@@ -33,9 +33,9 @@ One image (multi-stage, uv-built, non-root, Python 3.12 to match
 | --- | --- | --- |
 | `migrate` | `relay-migrate`, one-shot | idempotent; every other service waits for it to complete |
 | `api` | uvicorn on 8000 | bound to `127.0.0.1` only; healthchecked on `/health` |
-| `send-worker` | `relay-worker --once` every 5 min | loop = scheduler; a failing pass kills the container so Docker's restart policy surfaces it |
-| `event-worker` | `relay-events` every 5 min | polls SQS; idles politely if no queue is configured |
-| `retention-worker` | `relay-retention` daily | purge + crash recovery |
+| `send-worker` | `relay-worker --once` every `RELAY_SEND_TICK_SECONDS` (default 30s) | loop = scheduler; a failing pass kills the container so Docker's restart policy surfaces it |
+| `event-worker` | `relay-events` every `RELAY_EVENTS_TICK_SECONDS` (default 300s) | polls SQS; idles politely if no queue is configured |
+| `retention-worker` | `relay-retention` every `RELAY_RETENTION_TICK_SECONDS` (default daily) | purge + crash recovery |
 | `n8n` | the workflow spine | reaches the API at `http://api:8000`; import `infra/n8n/relay-spine.json` once via its UI |
 | `cloudflared` | Cloudflare Tunnel (profile: `tunnel`) | outbound-only ingress for the API — no public port, no load balancer |
 
@@ -46,8 +46,17 @@ plan reserved one; the code never grew the dependency, so provisioning
 Memorystore would be paying for an empty box — see "Redis" below).
 
 Postgres is an **external managed service**, referenced only through
-`RELAY_DATABASE_URL` / `RELAY_APP_DATABASE_URL`. For a cheap first
-deploy with a containerized Postgres on the same box, add the override:
+`RELAY_DATABASE_URL` / `RELAY_APP_DATABASE_URL`. The two DSNs carry two
+roles, wired for least privilege:
+
+| Service | DSN(s) | Role |
+| --- | --- | --- |
+| `migrate` | `RELAY_DATABASE_URL` (+ `RELAY_APP_DB_PASSWORD`) | `relay` — schema owner; creates/updates `relay_app` |
+| `api` | `RELAY_APP_DATABASE_URL` + `RELAY_DATABASE_URL` | `relay_app` for all tenant work; the owner session is used in code only by the admin-token endpoints (onboarding, key rotation, global suppression, preflight) |
+| `send-worker`, `event-worker`, `retention-worker` | `RELAY_APP_DATABASE_URL` only | `relay_app` — RLS-forced, minimal grants; the admin DSN never enters their environment |
+
+For a cheap first deploy with a containerized Postgres on the same box,
+add the override:
 
 ```bash
 docker compose -f docker-compose.prod.yml -f docker-compose.local-db.yml up -d
@@ -77,6 +86,13 @@ IAP only), a static external IP, an e2-medium Ubuntu 24.04 VM, Cloud SQL
 for PostgreSQL 16 (private IP, SSL enforced, backups + PITR), Secret
 Manager secrets, an Artifact Registry repo, and a least-privilege VM
 service account (per-secret accessor + registry pull + logs/metrics).
+
+Everything defaults to **us-east4** — the closest GCP region to AWS
+us-east-2, where the SES/SNS/SQS stack lives. That keeps every send and
+every SQS poll a short same-coast hop instead of a transatlantic one,
+and keeps prospect data hosted in the US (an EU region would drag in
+GDPR data-residency scope for no reason). Override `region`/`zone` in
+`terraform.tfvars` only with that trade-off in mind.
 
 ### 0. Prerequisites
 
@@ -193,10 +209,34 @@ required in both DSNs (`sslmode=require`).
 ### Redis
 
 Not provisioned. Nothing in `src/relay/` or the dependency tree uses
-Redis today, so Memorystore would be a bill for an empty box. If a real
-consumer appears (e.g. n8n in queue mode at scale), add Memorystore in
-`deploy/gcp/` then — or run a Redis container on the VM as the cheap
-fallback (one more service in the compose file).
+Redis today, so Memorystore would be a bill for an empty box. n8n is
+pinned to single-main mode (`EXECUTIONS_MODE=regular` in the compose
+file), which needs no Redis either — **the one condition that changes
+this is switching n8n to queue mode** (`EXECUTIONS_MODE=queue`, for
+multi-worker n8n at scale), which requires a Redis broker. If that day
+comes, add Memorystore in `deploy/gcp/` — or run a Redis container on
+the VM as the cheap fallback (one more service in the compose file).
+
+### Worker pacing
+
+The tick workers are one-shot commands wrapped in explicit sleep loops
+inside their containers — never a bare container-restart spin. The
+intervals are env-tunable without an image rebuild:
+
+| Variable | Default | Governs |
+| --- | --- | --- |
+| `RELAY_SEND_TICK_SECONDS` | 30 | gap between send-worker passes |
+| `RELAY_EVENTS_TICK_SECONDS` | 300 | gap between SQS drain passes |
+| `RELAY_RETENTION_TICK_SECONDS` | 86400 | gap between retention/purge passes |
+
+A failing pass still exits non-zero and kills its container, so real
+breakage surfaces as a visible restart-loop with backoff rather than a
+silent stall. One known src-level improvement (out of scope for this
+infra change): the SQS poller currently calls `receive_message` with
+`WaitTimeSeconds=0` (short polling); switching it to ~20 would make each
+drain pass long-poll. At the default 300s idle interval the request
+volume is tiny either way (~12 passes/hour, well inside the SQS free
+tier), so the interval, not long-polling, is what bounds cost today.
 
 ### Networking summary
 
