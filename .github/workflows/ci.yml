@@ -62,3 +62,42 @@ jobs:
           docker run --rm relay:ci python -c "import relay.api.app, relay.workers.send_worker, relay.workers.event_worker, relay.workers.retention_worker, relay.db.migrate; print('imports ok')"
           docker run --rm relay:ci relay-worker --help
           docker run --rm relay:ci uvicorn --version
+
+  deploy-config:
+    runs-on: ubuntu-latest
+    env:
+      # Dummies so the compose files' required-variable checks pass validation.
+      RELAY_DATABASE_URL: postgresql+psycopg://x:x@db:5432/relay
+      RELAY_APP_DATABASE_URL: postgresql+psycopg://y:y@db:5432/relay
+      RELAY_APP_DB_PASSWORD: x
+      RELAY_ADMIN_TOKEN: x
+      RELAY_MASTER_KEY: x
+      RELAY_EMAIL_HASH_PEPPER: x
+      TUNNEL_TOKEN: x
+      POSTGRES_PASSWORD: x
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate production compose
+        run: |
+          docker compose -f deploy/docker-compose.prod.yml --profile tunnel config --quiet
+          docker compose -f deploy/docker-compose.prod.yml -f deploy/docker-compose.local-db.yml config --quiet
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.*"
+          terraform_wrapper: false
+
+      - name: Terraform fmt + validate (deploy/gcp)
+        working-directory: deploy/gcp
+        run: |
+          terraform fmt -check -diff
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: Render the startup template (catches template syntax errors)
+        working-directory: deploy/gcp
+        run: |
+          echo 'templatefile("startup.sh.tpl", { project_id = "p", registry_host = "r", image = "i", db_host = "10.0.0.1", enable_tunnel = true, app_env = { A = "b" }, compose_yaml = file("../docker-compose.prod.yml") })' \
+            | terraform console > /dev/null
+          echo "template renders"

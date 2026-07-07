@@ -28,3 +28,11 @@ logs/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Terraform (deploy/gcp) — state and vars can contain secrets
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+.terraform.lock.hcl
+crash.log

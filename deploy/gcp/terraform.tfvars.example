@@ -1,0 +1,29 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored —
+# never commit a filled-in copy.
+
+project_id = "my-gcp-project"
+# us-east4 sits closest to AWS us-east-2, where the SES/SNS/SQS stack lives.
+region = "us-east4"
+zone   = "us-east4-a"
+
+# machine_type = "e2-medium"
+# db_tier      = "db-custom-1-3840"
+# image_tag    = "latest"
+# enable_tunnel = true
+
+# Non-secret app config, written into the VM's runtime env file verbatim.
+# Secrets do NOT go here — they go into Secret Manager (see deploy/README.md).
+app_env = {
+  AWS_REGION                        = "us-east-2"
+  RELAY_SES_FROM                    = "pilot@example.com"
+  RELAY_PILOT_RECIPIENTS            = "you@example.com"
+  RELAY_SQS_QUEUE_URL               = ""
+  RELAY_UNSUBSCRIBE_MAILTO          = "unsubscribe@example.com"
+  RELAY_UNSUBSCRIBE_URL             = "https://relay.example.com/unsubscribe"
+  RELAY_SENDER_PROVIDER             = "none"
+  RELAY_REAL_SEND_ENABLED           = "false"
+  RELAY_SENDER_IDENTITY_APPROVED    = "false"
+  RELAY_SENDER_DOMAIN_AUTHENTICATED = "false"
+  RELAY_COMPUTE_LOCAL_BACKEND       = "offline"
+  RELAY_COMPUTE_HOSTED_BACKEND      = "offline"
+}

@@ -1,0 +1,33 @@
+# Optional override: run Postgres as a container on the same box instead of
+# a managed database. The cheaper first deploy; trade-off is that backups,
+# upgrades, and durability are on you.
+#
+#   export POSTGRES_PASSWORD=… RELAY_APP_DB_PASSWORD=…
+#   export RELAY_DATABASE_URL="postgresql+psycopg://relay:$POSTGRES_PASSWORD@postgres:5432/relay"
+#   export RELAY_APP_DATABASE_URL="postgresql+psycopg://relay_app:$RELAY_APP_DB_PASSWORD@postgres:5432/relay"
+#   docker compose -f docker-compose.prod.yml -f docker-compose.local-db.yml up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?export POSTGRES_PASSWORD}
+      POSTGRES_DB: relay
+    volumes:
+      - pgdata_prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay -d relay"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    # No ports: reachable only on the compose network.
+
+  migrate:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata_prod:
