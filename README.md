@@ -178,6 +178,10 @@ scripts/          demo, seeding, evals, benchmark, local-Postgres helper
 
 ## Development
 
+New to the codebase? [docs/onboarding.md](docs/onboarding.md) is a
+guided ramp — a session-by-session reading path with exercises, from
+`just demo` to the send path's five defense layers.
+
 ![The development workflow](docs/img/dev-workflow.svg)
 
 The loop for making a change:
