@@ -1,5 +1,8 @@
 # PROTOTYPE STATUS — read this first if you are picking RELAY back up
 
+(New to the codebase entirely? [onboarding.md](onboarding.md) is the
+guided ramp; this file is the status ledger.)
+
 **As of 2026-07-05, RELAY is a prototype.** Every roadmap phase (0, 1A,
 1B, 1C, 2, 3, 4) is code-complete with 331 passing tests, and a live
 SES-sandbox smoke was executed and recorded
