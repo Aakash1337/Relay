@@ -354,8 +354,8 @@ simulated provider.
 | Google Gemma workhorse | **Pass** | `gemma-4-31b-it` passed 8/8 live eval cases and successfully performed classification, enrichment, scoring, and reply triage in a live journey. |
 | Google Gemini orchestrator | **Flaky / not release-ready** | One eval run scored 7/8, the next 8/8; a live outreach-copy step also failed once with extra data after JSON, then succeeded when the same lead resumed. See A13. |
 | Live-model pipeline | **Pass after resume** | With the threshold temporarily set to zero to force the qualified branch, the same lead resumed after the Gemini output failure, reached approval, simulated send, live Gemma triage, booking, and `closed`. |
-| AWS identity / SES / SQS | **Blocked by credentials** | Read-only STS, SES, and SQS calls returned invalid/unrecognized credential errors because the supplied access-key ID was masked. The event-worker online poll failed for the same reason. |
-| Real email | **Not executed** | No real send was attempted because AWS authentication did not validate. `RELAY_REAL_SEND_ENABLED` remained false at rest and in all executed send workers. |
+| AWS identity / SES / SQS | **Pass at authentication/send boundary** | On 2026-07-09, STS authentication succeeded, the configured SQS queue was reachable, and SES accepted one `SendEmail` request. The narrowly scoped IAM user denied SES account/identity inspection, so sandbox, identity, and DKIM state could not be independently read through these credentials. |
+| Real email | **Pass at SES-acceptance boundary; delivery unconfirmed** | Exactly one authorized, allowlisted real-mode job passed all 18 execution-time eligibility checks. The one-shot worker reported `sent=1`, `blocked=0`, `failed=0`, and `errored=0`; the job and lead both ended in `sent`, with start/completion timestamps, one `send.executed` audit record, and a non-empty SES provider message ID. Repeated subsequent SQS polls received no delivery event, and the connected Gmail account was not the recipient mailbox, so inbox delivery was not independently confirmed. The local `.env` master switch remained false at rest and was enabled only in the one-shot sending process. |
 | GCP / Cloudflare / EspoCRM | **Not executed live** | Terraform and configuration were validated only. No GCP project, Cloudflare token, or live EspoCRM credentials were available in this audit. |
 
 #### Credential-handling note
@@ -396,6 +396,11 @@ directly from the local secret store without transmitting them in chat.
   executed as described above.
 - Online Google model evals and a live-model pipeline: executed; Gemma passed and
   Gemini showed the nondeterministic contract failure in A13.
-- AWS/real email and cloud deployment: not executed because authentication or
-  external infrastructure was unavailable; these are explicit remaining
-  boundaries, not claimed passes.
+- AWS authentication, SQS access, and exactly one authorized SES real-send:
+  executed on 2026-07-09. SES acceptance and RELAY's persisted sent state were
+  verified; no SQS delivery event arrived during the audit window, and the
+  recipient inbox was not accessible through the connected Gmail account, so
+  final delivery remains unconfirmed.
+- GCP, Cloudflare, and live EspoCRM deployment: not executed because the
+  required external infrastructure or credentials were unavailable; these are
+  explicit remaining boundaries, not claimed passes.
