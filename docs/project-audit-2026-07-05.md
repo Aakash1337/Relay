@@ -2,8 +2,8 @@
 
 > **Revalidated 2026-07-09 at commit `23460d0`.** The original audit is
 > preserved below. See [Reassessment — 2026-07-09](#reassessment--2026-07-09)
-> for the current finding status and the deployment findings introduced by
-> the 23-commit update.
+> for the current finding status, deployment findings, and executed offline
+> and online functionality results.
 
 ## Scope and method
 
@@ -170,7 +170,7 @@ the new cloud path as production-ready.
 
 #### A7 — Production deployment silently drops supported settings
 
-**Severity:** High  
+**Severity:** High
 **Category:** configuration correctness / send controls / operability
 
 The GCP startup script writes the Terraform `app_env` map into the Compose
@@ -248,7 +248,7 @@ reviewed dependency process.
 
 #### A11 — Tmpfs does not keep all secrets off persistent disk
 
-**Severity:** Medium  
+**Severity:** Medium
 **Category:** secrets management / documentation accuracy
 
 The deployment documentation says the tmpfs environment file means no secret
@@ -282,28 +282,120 @@ from the repository root, for example:
 gcloud builds submit --tag "$(terraform -chdir=deploy/gcp output -raw image)" .
 ```
 
+#### A13 — Hosted-model JSON output is nondeterministic in live use
+
+**Severity:** High
+**Category:** online functionality / model contract / resumability
+
+The configured `gemini-3.5-flash` backend did not reliably honor the
+single-JSON-object contract even though the request asks for JSON response mode.
+The first hosted eval run failed the release threshold at 7/8 because the
+conservative sparse-scoring response contained extra data after the JSON object;
+an immediate rerun passed 8/8. A later live pipeline failed in outreach-copy
+generation with the same `Extra data` parse error. Resuming that exact lead
+then succeeded and the journey completed.
+
+The failure is transactionally safe—the step rolls back and the lead remains
+resumable—but `ComputeOutputInvalid` bubbles out of the runner instead of being
+parked in a named error state. This makes online behavior flaky and forces the
+operator or scheduler to discover that a retry is appropriate.
+
+**Recommendation:** Treat invalid structured output as an explicit bounded
+reformat/retry path or a named retryable/terminal state, record the raw response
+securely for diagnostics, and run hosted-model evals repeatedly in the release
+gate. Do not promote this model/prompt combination while a single eval pass can
+alternate between 87.5% and 100%.
+
+#### A14 — The operator demo crashes on a valid rejected lead
+
+**Severity:** Medium
+**Category:** developer experience / functional correctness
+
+With live Gemma scoring and the default fit threshold, the synthetic demo lead
+legitimately ended at `scored_rejected`. `scripts/demo_journey.py` nevertheless
+assumed an outreach draft existed and called `scalar_one()`, raising
+`NoResultFound`. The pipeline behaved correctly and safely; the demonstration
+script did not handle a valid terminal branch.
+
+**Recommendation:** Make the demo deterministic by pinning an offline backend or
+known score, or branch on `RunOutcome.final_state` and explain rejected versus
+qualified outcomes without querying for a nonexistent draft.
+
+### Executed functionality audit
+
+The earlier assessment was primarily static because PostgreSQL was unavailable.
+This follow-up started Docker Desktop, created a disposable PostgreSQL 16
+database on `127.0.0.1:5433`, and executed the product rather than inferring its
+behavior. No development database was touched, and all offline sends used the
+simulated provider.
+
+#### Offline execution results
+
+| Surface | Result | Evidence |
+| --- | --- | --- |
+| Full PostgreSQL suite | **Pass** | All 331 tests passed. The normal host run produced 330 passes and one client-tool skip; the backup/restore erasure test then passed separately with matching PostgreSQL 16 `pg_dump`/`psql`. |
+| Coverage | **Pass with gaps** | 92% total statement coverage (3,660 statements, 308 missed). Lowest material modules included CRM Espo at 52%, Anthropic at 70%, event worker at 73%, sender registry at 74%, and send worker at 84%. |
+| Demo journey | **Pass offline** | Twenty state transitions completed through approval, simulated sending, interested reply, booking, and closure. |
+| Synthetic cohort | **Pass** | Twenty prospects were seeded, approved, simulated-sent, replied, and converged: 10 unsubscribed, 6 not interested, 4 closed. |
+| API | **Pass** | Health, onboarding, lead creation, pipeline runs, approval, worker tick, trace, economics, metrics, and OpenAPI documentation were exercised over a live local server. |
+| Browser UI | **Pass** | Review queue load and approval, operations metrics refresh, and admin tenant onboarding all succeeded with no browser-console errors. |
+| Workers | **Pass offline** | Send, retention, and event-worker no-queue paths completed; send execution remained simulated. |
+| Reasoning evals | **Pass offline** | Both offline tiers scored 100%. |
+| Throughput | **Measured** | Two tenants × ten leads at concurrency four completed at 10.6 leads/sec end to end on this machine. |
+| Container image | **Pass** | Production image built; application imports and worker/uvicorn entrypoints resolved as the non-root runtime image. |
+| n8n | **Pass at artifact/runtime boundary** | Workflow JSON parsed as five nodes and three connections; the current floating image started and reported n8n 2.29.9. The workflow was not connected to external services. |
+| Compose/Terraform | **Pass at validation boundary** | Both production Compose variants rendered; Terraform format, init, validate, and startup-template rendering passed. No cloud resources were applied. |
+| Static/security scans | **Mixed** | Ruff and formatting passed; Pylint remained non-zero. Bandit found zero high, three medium, and seven low alerts (the medium results were generated-template/parameterized-SQL heuristics and SNS-required SHA-1 compatibility). `pip-audit` found no known vulnerabilities in locked runtime dependencies. |
+
+#### Online execution results
+
+| Integration | Result | Evidence / boundary |
+| --- | --- | --- |
+| Google Gemma workhorse | **Pass** | `gemma-4-31b-it` passed 8/8 live eval cases and successfully performed classification, enrichment, scoring, and reply triage in a live journey. |
+| Google Gemini orchestrator | **Flaky / not release-ready** | One eval run scored 7/8, the next 8/8; a live outreach-copy step also failed once with extra data after JSON, then succeeded when the same lead resumed. See A13. |
+| Live-model pipeline | **Pass after resume** | With the threshold temporarily set to zero to force the qualified branch, the same lead resumed after the Gemini output failure, reached approval, simulated send, live Gemma triage, booking, and `closed`. |
+| AWS identity / SES / SQS | **Blocked by credentials** | Read-only STS, SES, and SQS calls returned invalid/unrecognized credential errors because the supplied access-key ID was masked. The event-worker online poll failed for the same reason. |
+| Real email | **Not executed** | No real send was attempted because AWS authentication did not validate. `RELAY_REAL_SEND_ENABLED` remained false at rest and in all executed send workers. |
+| GCP / Cloudflare / EspoCRM | **Not executed live** | Terraform and configuration were validated only. No GCP project, Cloudflare token, or live EspoCRM credentials were available in this audit. |
+
+#### Credential-handling note
+
+Credentials supplied through a conversational channel should be treated as
+exposed and rotated. The local `.env` remained ignored by Git and was not added
+to any commit. Future online audits should load narrowly scoped credentials
+directly from the local secret store without transmitting them in chat.
+
 ### Updated priorities
 
-1. Fix the production configuration contract and add a rendered-config test.
-2. Reduce each service's secret set to the minimum it needs.
-3. Enforce migration-before-runtime ordering across host reboots and upgrades.
-4. Pin production/build artifacts and commit the Terraform provider lock file.
-5. Add process-level production validation for known development secrets.
-6. Make the local PostgreSQL test path match the documented one-command flow.
-7. Triage Pylint, add an advisory security scanner, and split the route module.
-8. Correct the secret-at-rest and Cloud Build runbook documentation.
+1. Stabilize structured output from the hosted model and explicitly handle
+   `ComputeOutputInvalid` in the pipeline.
+2. Fix the production configuration contract and add a rendered-config test.
+3. Reduce each service's secret set to the minimum it needs.
+4. Enforce migration-before-runtime ordering across host reboots and upgrades.
+5. Pin production/build artifacts and commit the Terraform provider lock file.
+6. Add process-level production validation for known development secrets.
+7. Make the local PostgreSQL test path match the documented one-command flow.
+8. Fix the demo's rejected-lead branch and raise coverage in external adapters
+   and worker entrypoints.
+9. Triage Pylint, add Bandit and dependency auditing to CI, and split the route
+   module.
+10. Correct the secret-at-rest and Cloud Build runbook documentation.
 
 ### Current verification status
 
-- Ruff lint: passed.
-- Ruff format check: passed.
-- Pytest: blocked locally because PostgreSQL was unavailable; CI now defines a
-  PostgreSQL-backed full-suite job.
-- Pylint: completed with a non-zero result and the finding classes described in
-  A2/A6.
-- Bandit: still unavailable in the project environment.
-- Production Compose: rendered successfully with placeholder values; rendering
-  confirmed the missing-setting and over-broad-secret findings.
-- Terraform: CI includes format, initialization, validation, and startup-template
-  rendering; this reassessment statically reviewed those definitions rather
-  than applying infrastructure.
+- Ruff lint and format: passed (111 files formatted).
+- Pytest: all 331 tests executed and passed across the host run plus the matching
+  PostgreSQL-client backup/restore run.
+- Coverage: 92% total.
+- Pylint: completed with exit 30 and the finding classes described in A2/A6.
+- Bandit: independently executed through `uvx`; zero high, three medium, seven
+  low. It remains absent from the project dependency group and CI.
+- Dependency audit: no known vulnerabilities found in locked runtime packages.
+- Offline demo, seed cohort, API, review/ops/admin UI, workers, evals, benchmark,
+  image build, n8n artifact/runtime boundary, Compose, and Terraform validation:
+  executed as described above.
+- Online Google model evals and a live-model pipeline: executed; Gemma passed and
+  Gemini showed the nondeterministic contract failure in A13.
+- AWS/real email and cloud deployment: not executed because authentication or
+  external infrastructure was unavailable; these are explicit remaining
+  boundaries, not claimed passes.
