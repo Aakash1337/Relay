@@ -181,6 +181,9 @@ scripts/          demo, seeding, evals, benchmark, local-Postgres helper
 New to the codebase? [docs/onboarding.md](docs/onboarding.md) is a
 guided ramp — a session-by-session reading path with exercises, from
 `just demo` to the send path's five defense layers.
+If Python repositories are unfamiliar, start with
+[docs/project-learning-guide.md](docs/project-learning-guide.md) for the
+mental model, Python vocabulary, exact reading order, and ownership checkpoints.
 
 ![The development workflow](docs/img/dev-workflow.svg)
 
