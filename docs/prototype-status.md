@@ -60,6 +60,28 @@ None of these block each other; items 1–2 block real-prospect email.
    long-polling alone doesn't reduce suppression latency while the
    sleep dominates. *Trigger to do it:* real send volume where fast
    suppression of a bad domain matters.
+8. **Prospecting integration (finding clients, not just working them)**
+   — RELAY starts at "you already have a list"; criteria-based
+   discovery via a licensed data provider (Apollo-class) is not built.
+   The receiving side already exists end to end: `POST /leads/batch` →
+   source-register provenance → scoring → the `/prospects` shortlist,
+   so the build is an adapter seam in `ingest/` (mirror `senders/`:
+   interface + one provider + offline stub) feeding batch intake, plus
+   per-campaign ICP criteria. Provider evaluation is the slow part —
+   open decision record:
+   [decisions/prospecting-provider.md](decisions/prospecting-provider.md).
+   *Trigger to do it:* sustained volume beyond hand-research (~hundreds
+   of prospects/month) or the first external tenant needing self-serve
+   discovery. Until then, manual research + `just import` is
+   competitive and produces better notes.
+9. **Reply-side scheduling** — `interested → booking_pending → booked`
+   currently assumes a human books the meeting out-of-band. A calendar
+   integration (Cal.com / Google Calendar API) proposing times in the
+   reply thread and confirming the booking would close the last manual
+   step of the funnel. Fits the machine as-is: `booking_pending` is the
+   wait state; the integration is a new boundary adapter, not new
+   states. *Trigger to do it:* enough interested replies that manual
+   scheduling becomes the bottleneck — a good problem, not yet real.
 
 ## Why you can trust the "not done" list is complete
 
