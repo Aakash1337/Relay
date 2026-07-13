@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored —
+# never commit a filled-in copy.
+
+sending_domain = "outreach.example.com"
+
+# aws_region          = "us-east-2"
+# mail_from_subdomain = "mail"
+# name_prefix         = "relay"
+# create_iam_user     = true   # secret lands in TF state; keep state private
