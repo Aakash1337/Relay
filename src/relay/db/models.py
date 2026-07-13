@@ -213,6 +213,12 @@ class Campaign(Base):
     sequence_delay_hours: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("72")
     )
+    #: Human shortlist gate: when true, scored-qualified leads WAIT in
+    #: shortlist_pending until a person pursues or skips them — nothing
+    #: is drafted (no model spend) for leads nobody picked.
+    shortlist_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
     status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default=text("'active'")
     )

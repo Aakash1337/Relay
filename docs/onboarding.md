@@ -41,21 +41,22 @@ everything else through them:
 The shape of the system (matches `img/architecture.svg`): one FastAPI
 service, one Postgres, internal workers sharing the same codebase, an
 n8n workflow (or cron) as the timer, AWS SES/SNS/SQS only when real
-mail moves, three plain-HTML pages (`/review`, `/ops`, `/admin`).
+mail moves, four plain-HTML pages (`/prospects`, `/review`, `/ops`,
+`/admin`).
 
 ## Part 2 — the repo map
 
 ```
 src/relay/
   api/            FastAPI: routes.py (every endpoint), auth, schemas,
-                  and the three HTML pages (review, ops, admin)
+                  and the four HTML pages (review, prospects, ops, admin)
   compute/        the LLM seam: backends (offline/openai-compat/google/
                   anthropic), prompting.py (the untrusted_data wrapper)
   crm/            one-way CRM mirror (EspoCRM adapter) — never on the send path
   db/             engine.py (the two engines/roles), models.py (schema),
                   migrate.py (idempotent migrator), sql/ (the crown jewels:
                   001 schema evolution, 002 functions, 003 triggers, 004 RLS)
-  domain/         the business rules: states.py (the 31-state machine),
+  domain/         the business rules: states.py (the 33-state machine),
                   state_machine.py (the ONLY way state changes),
                   eligibility.py (the 17-check send gate), suppression,
                   approval, erasure, preflight
@@ -138,7 +139,7 @@ it that way (`tests/test_adversarial.py`, `test_dry_run.py`,
 
 ### Session 3 — one pipeline tick, crash-safety, guardrails
 
-Read `pipeline/runner.py`: `_WAIT_STATES` (the two deliberate stops),
+Read `pipeline/runner.py`: `_WAIT_STATES` (the three deliberate stops),
 the advance-until-you-can't loop, one-transaction-per-step, failure
 parking (`error_retryable` vs `error_terminal`), `_advance_sequence`
 (follow-up steps re-enter the same machine). Then

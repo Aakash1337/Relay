@@ -60,3 +60,23 @@ BEGIN
   END IF;
 END
 $$;
+
+-- Human shortlist stage (gap-fill): campaigns opt in; two new lead states.
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS shortlist_required boolean
+  NOT NULL DEFAULT false;
+
+-- The state CHECKs enumerate every LeadState; refresh them for the two new
+-- states (shortlist_pending, shortlist_skipped). Idempotent drop+add, same
+-- pattern as ck_runs_status above. The list mirrors domain/states.py.
+ALTER TABLE leads DROP CONSTRAINT IF EXISTS ck_leads_state;
+ALTER TABLE leads ADD CONSTRAINT ck_leads_state
+  CHECK (state IN ('created', 'source_checked', 'source_rejected', 'enrichment_pending', 'enriched', 'verification_pending', 'verification_failed', 'verified', 'scoring_pending', 'scored_rejected', 'scored_qualified', 'shortlist_pending', 'shortlist_skipped', 'personalization_pending', 'draft_ready', 'approval_pending', 'rejected_by_human', 'approved', 'send_eligibility_pending', 'send_blocked', 'send_queued', 'sent', 'bounce_received', 'reply_received', 'triage_pending', 'unsubscribed', 'not_interested', 'interested', 'booking_pending', 'booked', 'closed', 'error_retryable', 'error_terminal'));
+ALTER TABLE leads DROP CONSTRAINT IF EXISTS ck_leads_error_return_state;
+ALTER TABLE leads ADD CONSTRAINT ck_leads_error_return_state
+  CHECK (error_return_state IS NULL OR error_return_state IN ('created', 'source_checked', 'source_rejected', 'enrichment_pending', 'enriched', 'verification_pending', 'verification_failed', 'verified', 'scoring_pending', 'scored_rejected', 'scored_qualified', 'shortlist_pending', 'shortlist_skipped', 'personalization_pending', 'draft_ready', 'approval_pending', 'rejected_by_human', 'approved', 'send_eligibility_pending', 'send_blocked', 'send_queued', 'sent', 'bounce_received', 'reply_received', 'triage_pending', 'unsubscribed', 'not_interested', 'interested', 'booking_pending', 'booked', 'closed', 'error_retryable', 'error_terminal'));
+ALTER TABLE lead_transitions DROP CONSTRAINT IF EXISTS ck_transitions_from_state;
+ALTER TABLE lead_transitions ADD CONSTRAINT ck_transitions_from_state
+  CHECK (from_state IN ('created', 'source_checked', 'source_rejected', 'enrichment_pending', 'enriched', 'verification_pending', 'verification_failed', 'verified', 'scoring_pending', 'scored_rejected', 'scored_qualified', 'shortlist_pending', 'shortlist_skipped', 'personalization_pending', 'draft_ready', 'approval_pending', 'rejected_by_human', 'approved', 'send_eligibility_pending', 'send_blocked', 'send_queued', 'sent', 'bounce_received', 'reply_received', 'triage_pending', 'unsubscribed', 'not_interested', 'interested', 'booking_pending', 'booked', 'closed', 'error_retryable', 'error_terminal'));
+ALTER TABLE lead_transitions DROP CONSTRAINT IF EXISTS ck_transitions_to_state;
+ALTER TABLE lead_transitions ADD CONSTRAINT ck_transitions_to_state
+  CHECK (to_state IN ('created', 'source_checked', 'source_rejected', 'enrichment_pending', 'enriched', 'verification_pending', 'verification_failed', 'verified', 'scoring_pending', 'scored_rejected', 'scored_qualified', 'shortlist_pending', 'shortlist_skipped', 'personalization_pending', 'draft_ready', 'approval_pending', 'rejected_by_human', 'approved', 'send_eligibility_pending', 'send_blocked', 'send_queued', 'sent', 'bounce_received', 'reply_received', 'triage_pending', 'unsubscribed', 'not_interested', 'interested', 'booking_pending', 'booked', 'closed', 'error_retryable', 'error_terminal'));

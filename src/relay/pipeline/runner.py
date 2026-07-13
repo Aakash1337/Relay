@@ -77,6 +77,7 @@ ACTOR = "system:pipeline"
 #: States where the runner must stop and wait for someone else.
 _WAIT_STATES = frozenset(
     {
+        LeadState.SHORTLIST_PENDING,  # human picks who to pursue
         LeadState.APPROVAL_PENDING,  # human gate
         LeadState.SEND_QUEUED,  # internal send worker
     }
@@ -215,6 +216,8 @@ class PipelineRunner:
 
     @staticmethod
     def _stop_reason(state: str) -> str:
+        if state == str(LeadState.SHORTLIST_PENDING):
+            return "waiting_shortlist"
         if state == str(LeadState.APPROVAL_PENDING):
             return "waiting_human"
         if state == str(LeadState.SEND_QUEUED):
@@ -330,6 +333,19 @@ class PipelineRunner:
 
     def _step_queue_personalization(self, session: Session, lead: Lead) -> None:
         self.harness.tick("queue_personalization")
+        campaign = session.get(Campaign, lead.campaign_id)
+        if campaign is not None and campaign.shortlist_required:
+            # Campaign opted into the human shortlist: park and WAIT. No
+            # draft exists yet, so leads nobody pursues cost zero tokens.
+            transition(
+                session,
+                lead,
+                LeadState.SHORTLIST_PENDING,
+                actor=ACTOR,
+                reason="campaign requires a human shortlist decision",
+                run_id=self.harness.run_id,
+            )
+            return
         transition(
             session,
             lead,

@@ -38,7 +38,8 @@ from relay.domain.approval import (
     reject_draft,
     review_draft,
 )
-from relay.domain.state_machine import TransitionError
+from relay.domain.state_machine import TransitionError, transition
+from relay.domain.states import LeadState
 from relay.domain.suppression import add_suppression
 from relay.economics import campaign_economics, tenant_economics
 from relay.guardrails.harness import GuardrailViolation
@@ -402,6 +403,7 @@ def create_lead(
                 title=body.title,
                 company_name=body.company_name,
                 company_domain=body.company_domain,
+                bio=body.bio,
             )
             session.add(lead)
             audit.record(
@@ -724,6 +726,219 @@ def batch_review(
         rejected=counts["rejected"],
         failed=failed,
     )
+
+
+# ── Batch lead intake (research output → leads, one call) ───────────────────
+
+
+@router.post(
+    "/leads/batch",
+    response_model=schemas.LeadBatchCreateResponse,
+    status_code=status.HTTP_207_MULTI_STATUS,
+)
+def create_leads_batch(
+    body: schemas.LeadBatchCreateRequest,
+    tenant_id: uuid.UUID = Depends(require_tenant),
+) -> schemas.LeadBatchCreateResponse:
+    """Ingest many prospects under one campaign/source in one call.
+
+    Each item runs in ITS OWN transaction through exactly the single-lead
+    path (validation, source-register snapshot, preflight/dry-run DB
+    triggers, duplicate constraint) — one bad row fails alone and the
+    other 49 still land. Nothing here can send: intake only ever creates
+    leads in 'created'.
+    """
+    results: list[schemas.LeadBatchResultItem] = []
+    created = 0
+    for index, item in enumerate(body.items):
+        try:
+            # Full single-lead validation, incl. the real-data rules.
+            request = schemas.LeadCreateRequest(
+                campaign_id=body.campaign_id,
+                source_id=body.source_id,
+                **item.model_dump(),
+            )
+            single = create_lead(request, tenant_id)
+            created += 1
+            results.append(
+                schemas.LeadBatchResultItem(
+                    index=index, email=str(item.email), ok=True, lead_id=single.id
+                )
+            )
+        except HTTPException as exc:
+            results.append(
+                schemas.LeadBatchResultItem(
+                    index=index,
+                    email=str(item.email),
+                    ok=False,
+                    error=str(exc.detail)[:500],
+                )
+            )
+        except ValueError as exc:
+            results.append(
+                schemas.LeadBatchResultItem(
+                    index=index, email=str(item.email), ok=False, error=str(exc)[:500]
+                )
+            )
+    failed = len(results) - created
+    log.info("batch intake processed", created=created, failed=failed)
+    return schemas.LeadBatchCreateResponse(
+        results=results, created=created, failed=failed
+    )
+
+
+# ── Shortlist: the human picks who to pursue, before any drafting ───────────
+
+
+@router.get("/prospects/pending", response_model=schemas.ProspectsResponse)
+def pending_prospects(
+    limit: int = 100,
+    tenant_id: uuid.UUID = Depends(require_tenant),
+) -> schemas.ProspectsResponse:
+    """Scored-qualified leads waiting for a shortlist decision, best fit
+    first — the picker's working set."""
+    limit = max(1, min(limit, 500))
+    with tenant_session(tenant_id) as session:
+        leads = (
+            session.execute(
+                select(Lead)
+                .where(Lead.state == str(LeadState.SHORTLIST_PENDING))
+                .order_by(Lead.fit_score.desc().nulls_last(), Lead.created_at)
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+        prospects = [
+            schemas.ProspectItem(
+                lead_id=lead.id,
+                email=lead.email,
+                first_name=lead.first_name,
+                last_name=lead.last_name,
+                title=lead.title,
+                company_name=lead.company_name,
+                company_domain=lead.company_domain,
+                region_assumption=lead.region_assumption,
+                fit_score=float(lead.fit_score) if lead.fit_score is not None else None,
+                bio=lead.bio,
+            )
+            for lead in leads
+        ]
+    return schemas.ProspectsResponse(prospects=prospects, count=len(prospects))
+
+
+def _shortlist_one(
+    session, lead: Lead, *, decision: str, actor: str, reason: str | None
+) -> str:
+    """Apply one pursue/skip decision. The state machine (code + DB
+    trigger) rejects anything not sitting in shortlist_pending."""
+    target = (
+        LeadState.PERSONALIZATION_PENDING
+        if decision == "pursue"
+        else LeadState.SHORTLIST_SKIPPED
+    )
+    transition(
+        session,
+        lead,
+        target,
+        actor=f"human:{actor}",
+        reason=reason or f"shortlist: {decision}",
+    )
+    audit.record(
+        session,
+        tenant_id=lead.tenant_id,
+        actor_type="human",
+        actor_id=actor,
+        action=f"lead.shortlist_{decision}",
+        entity_type="lead",
+        entity_id=str(lead.id),
+        payload={"reason": reason or ""},
+    )
+    return lead.state
+
+
+@router.post("/leads/{lead_id}/shortlist", response_model=schemas.ShortlistResponse)
+def shortlist_lead(
+    lead_id: uuid.UUID,
+    body: schemas.ShortlistRequest,
+    tenant_id: uuid.UUID = Depends(require_tenant),
+) -> schemas.ShortlistResponse:
+    try:
+        with tenant_session(tenant_id) as session:
+            lead = session.get(Lead, lead_id)
+            if lead is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "lead not found")
+            state = _shortlist_one(
+                session,
+                lead,
+                decision=body.decision,
+                actor=body.actor,
+                reason=body.reason,
+            )
+    except TransitionError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    return schemas.ShortlistResponse(lead_id=lead_id, state=state)
+
+
+@router.post(
+    "/prospects/batch-shortlist", response_model=schemas.BatchShortlistResponse
+)
+def batch_shortlist(
+    body: schemas.BatchShortlistRequest,
+    tenant_id: uuid.UUID = Depends(require_tenant),
+) -> schemas.BatchShortlistResponse:
+    """Decide many prospects in one call (50 researched clients, one
+    submit). Per-item transactions: a stale or wrong-state item fails
+    alone. Pursue only queues drafting — nothing here can send."""
+    results: list[schemas.BatchShortlistResultItem] = []
+    counts = {"pursue": 0, "skip": 0}
+    failed = 0
+    for item in body.items:
+        try:
+            with tenant_session(tenant_id) as session:
+                lead = session.get(Lead, item.lead_id)
+                if lead is None:
+                    raise TransitionError("lead not found")
+                state = _shortlist_one(
+                    session,
+                    lead,
+                    decision=item.decision,
+                    actor=body.actor,
+                    reason=item.reason,
+                )
+                counts[str(item.decision)] += 1
+                results.append(
+                    schemas.BatchShortlistResultItem(
+                        lead_id=item.lead_id, ok=True, state=state
+                    )
+                )
+        except (TransitionError, IntegrityError) as exc:
+            failed += 1
+            results.append(
+                schemas.BatchShortlistResultItem(
+                    lead_id=item.lead_id, ok=False, error=str(exc)[:500]
+                )
+            )
+    log.info(
+        "batch shortlist processed",
+        actor=body.actor,
+        pursued=counts["pursue"],
+        skipped=counts["skip"],
+        failed=failed,
+    )
+    return schemas.BatchShortlistResponse(
+        results=results,
+        pursued=counts["pursue"],
+        skipped=counts["skip"],
+        failed=failed,
+    )
+
+
+@router.get("/prospects", include_in_schema=False)
+def prospects_page() -> HTMLResponse:
+    from relay.api.prospects_ui import PROSPECTS_PAGE
+
+    return HTMLResponse(PROSPECTS_PAGE)
 
 
 # ── The approval UI: a static page, credentials stay client-side ────────────
