@@ -51,9 +51,9 @@ and a handful of internal workers that share the same codebase. The
 scheduler is anything that can hit an HTTP endpoint on a timer (the
 repo ships an n8n workflow, but cron works). AWS is only involved when
 real mail moves: SES sends it, and a signed SNS-to-SQS loop brings
-bounce and complaint events back. The three web pages (review queue,
-ops dashboard, admin console) are plain HTML served by the API, no
-build step.
+bounce and complaint events back. The four web pages (prospect
+shortlist, review queue, ops dashboard, admin console) are plain HTML
+served by the API, no build step.
 
 The unusual choice is making Postgres the enforcement layer instead of
 just storage. Tenant isolation is row-level security. The lead state
@@ -70,8 +70,8 @@ handoff — see [docs/control-flow.md](docs/control-flow.md).
 
 | Area | What you get |
 | --- | --- |
-| Pipeline | A 31-state lead machine, one transaction per step, crash recovery on every tick, resumable failures, and multi-step follow-up sequences where each step gets its own human approval |
-| Review | A rubric for approve / edit / reject with reasons, an append-only review trail, a confidence-ordered queue, batch review, and edit-rate tracked as a metric |
+| Pipeline | A 33-state lead machine, one transaction per step, crash recovery on every tick, resumable failures, an optional human shortlist stage before any drafting spend, and multi-step follow-up sequences where each step gets its own human approval |
+| Review | A prospect shortlist picker (pursue/skip, batchable), a rubric for approve / edit / reject with reasons, an append-only review trail, a confidence-ordered queue, batch review, and edit-rate tracked as a metric |
 | Sending | Transactional-outbox send jobs, race-proof daily caps with per-tenant overrides, hourly pacing and warmup ramps, per-tenant sender identities, and a last-hop recipient check at the provider boundary |
 | Compliance | Lawful-basis and source provenance required at ingestion, a legal-preflight gate for real-person data, region rules as config, RFC 8058 one-click unsubscribe, DSR erasure, retention purge, and keyed email digests |
 | Multi-tenancy | Row-level security everywhere, one-call tenant onboarding, per-tenant quotas and spend caps, cost-per-meeting economics, and a worker that drains tenants in parallel |
@@ -113,7 +113,7 @@ just db-migrate           # schema + triggers + RLS + rule seeding
 just demo                 # walk a synthetic lead through every state
 just seed                 # seed and run a 20-prospect synthetic cohort
 just test                 # full suite, incl. the exit gates
-just api                  # FastAPI on :8000 (/docs, /review, /ops, /admin)
+just api                  # FastAPI on :8000 (/docs, /review, /prospects, /ops, /admin)
 just worker               # one send-worker pass
 just bench 2 10 4         # throughput benchmark: tenants, leads, concurrency
 just stack-up             # optional: adds the n8n spine on :5678
@@ -132,7 +132,7 @@ requirements, and the SES wiring.
 
 ## Tests
 
-331 tests, all against real PostgreSQL. The interesting ones are
+345 tests, all against real PostgreSQL. The interesting ones are
 adversarial: workers raced against each other to force duplicate sends,
 raw SQL thrown at the triggers, prompt injection planted in prospect
 bios, a crash forced mid-send, a backup restored to prove erasure
@@ -156,7 +156,7 @@ roadmap's exit criteria:
 
 ```
 src/relay/
-  api/            routes, auth, schemas, and the three HTML pages
+  api/            routes, auth, schemas, and the four HTML pages
   compute/        model backends behind the routing seam
   crm/            one-way CRM mirror (never on the send path)
   db/             engine, models, migrations, SQL (triggers, RLS)

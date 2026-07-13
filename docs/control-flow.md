@@ -76,6 +76,9 @@ stateDiagram-v2
     scoring_pending --> scored_qualified
     scoring_pending --> scored_rejected
     scored_qualified --> personalization_pending
+    scored_qualified --> shortlist_pending: campaign opts in
+    shortlist_pending --> personalization_pending: human pursues
+    shortlist_pending --> shortlist_skipped: human skips
     personalization_pending --> draft_ready
     draft_ready --> approval_pending
     approval_pending --> approved: human approves
@@ -101,10 +104,13 @@ stateDiagram-v2
 Not drawn, but real: every active state also has edges to
 `error_retryable` and `error_terminal`.
 
-Two states are **stop points** where control deliberately leaves the
-pipeline (`_WAIT_STATES` in the runner): `approval_pending` waits for a
-human, `send_queued` waits for the send worker. The runner halts and
-returns at both.
+Three states are **stop points** where control deliberately leaves the
+pipeline (`_WAIT_STATES` in the runner): `shortlist_pending` waits for a
+human to pursue or skip the prospect (campaigns opt in via
+`shortlist_required` — no drafting spend until someone picks the lead),
+`approval_pending` waits for a human to approve the exact text, and
+`send_queued` waits for the send worker. The runner halts and returns
+at all three.
 
 Key properties:
 
@@ -114,7 +120,8 @@ Key properties:
   (`fn_enforce_lead_transition`). Raw SQL cannot move a lead along an
   edge that doesn't exist.
 - **Branch-offs are terminal.** `source_rejected`,
-  `verification_failed`, `scored_rejected`, `rejected_by_human`,
+  `verification_failed`, `scored_rejected`, `shortlist_skipped`,
+  `rejected_by_human`,
   `send_blocked`, `bounce_received`, `unsubscribed`, `not_interested`,
   `closed`, `error_terminal` have no outgoing edges. That is how "do
   not contact" is permanent by structure, not by a flag someone might

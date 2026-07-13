@@ -109,6 +109,11 @@ bench tenants="2" leads="10" concurrency="4":
 seed n="20":
     uv run python scripts/seed_synthetic.py {{n}}
 
+# Import researched prospects from a CSV via the batch API
+# (usage: just import prospects.csv rk_KEY CAMPAIGN_UUID SOURCE_UUID)
+import csv_file api_key campaign source:
+    uv run python scripts/import_leads.py {{csv_file}} --api-key {{api_key}} --campaign {{campaign}} --source {{source}}
+
 # ── Testing ─────────────────────────────────────────────────────────────────
 
 # Run the full test suite (requires a reachable Postgres; see README)

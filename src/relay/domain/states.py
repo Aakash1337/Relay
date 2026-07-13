@@ -39,6 +39,8 @@ class LeadState(StrEnum):
     SCORING_PENDING = "scoring_pending"
     SCORED_REJECTED = "scored_rejected"
     SCORED_QUALIFIED = "scored_qualified"
+    SHORTLIST_PENDING = "shortlist_pending"
+    SHORTLIST_SKIPPED = "shortlist_skipped"
     PERSONALIZATION_PENDING = "personalization_pending"
     DRAFT_READY = "draft_ready"
     APPROVAL_PENDING = "approval_pending"
@@ -67,6 +69,7 @@ TERMINAL_STATES: frozenset[LeadState] = frozenset(
         LeadState.SOURCE_REJECTED,
         LeadState.VERIFICATION_FAILED,
         LeadState.SCORED_REJECTED,
+        LeadState.SHORTLIST_SKIPPED,
         LeadState.REJECTED_BY_HUMAN,
         LeadState.SEND_BLOCKED,
         LeadState.BOUNCE_RECEIVED,
@@ -99,7 +102,16 @@ _PIPELINE_TRANSITIONS: dict[LeadState, frozenset[LeadState]] = {
     LeadState.SCORING_PENDING: frozenset(
         {LeadState.SCORED_REJECTED, LeadState.SCORED_QUALIFIED}
     ),
-    LeadState.SCORED_QUALIFIED: frozenset({LeadState.PERSONALIZATION_PENDING}),
+    # scored_qualified forks on the campaign's shortlist_required flag:
+    # straight to drafting (default), or to the human shortlist first.
+    LeadState.SCORED_QUALIFIED: frozenset(
+        {LeadState.PERSONALIZATION_PENDING, LeadState.SHORTLIST_PENDING}
+    ),
+    # shortlist_pending is a WAIT state: a human pursues (→ drafting) or
+    # skips (→ terminal). Skipped leads are never drafted or emailed.
+    LeadState.SHORTLIST_PENDING: frozenset(
+        {LeadState.PERSONALIZATION_PENDING, LeadState.SHORTLIST_SKIPPED}
+    ),
     LeadState.PERSONALIZATION_PENDING: frozenset({LeadState.DRAFT_READY}),
     LeadState.DRAFT_READY: frozenset({LeadState.APPROVAL_PENDING}),
     LeadState.APPROVAL_PENDING: frozenset(

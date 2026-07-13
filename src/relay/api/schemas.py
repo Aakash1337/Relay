@@ -121,6 +121,9 @@ class CampaignCreateRequest(BaseModel):
     #: no-reply delay before the next step may draft.
     sequence_length: int = Field(default=1, ge=1, le=10)
     sequence_delay_hours: int = Field(default=72, ge=0)
+    #: Human shortlist gate: scored-qualified leads wait for a person to
+    #: pursue or skip them before anything is drafted.
+    shortlist_required: bool = False
 
 
 class CampaignResponse(BaseModel):
@@ -186,6 +189,9 @@ class LeadCreateRequest(BaseModel):
     title: str | None = None
     company_name: str | None = None
     company_domain: str | None = None
+    #: Prospect/research notes. UNTRUSTED: reaches prompts only through
+    #: the provenance-labeled wrapper, like every free-text field.
+    bio: str | None = Field(default=None, max_length=8000)
 
     @model_validator(mode="after")
     def _real_data_gets_strict_validation(self) -> LeadCreateRequest:
@@ -378,6 +384,107 @@ class BatchReviewResponse(BaseModel):
     failed: int
     #: Always false: review/approval never sends (§10).
     sent: Literal[False] = False
+
+
+# ── Batch lead intake (research → 50 prospects in one call) ─────────────────
+
+
+class LeadBatchItem(BaseModel):
+    """Per-lead fields of LeadCreateRequest; campaign/source come from the
+    envelope. Validation (incl. the real-data rules) is applied by
+    constructing a full LeadCreateRequest per item at intake time."""
+
+    email: EmailAddress
+    lawful_basis: LawfulBasis
+    region_assumption: str = Field(min_length=2, max_length=64)
+    dry_run: bool = True
+    retention_until: datetime | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    title: str | None = None
+    company_name: str | None = None
+    company_domain: str | None = None
+    bio: str | None = Field(default=None, max_length=8000)
+
+
+class LeadBatchCreateRequest(BaseModel):
+    campaign_id: uuid.UUID
+    source_id: uuid.UUID
+    items: list[LeadBatchItem] = Field(min_length=1, max_length=500)
+
+
+class LeadBatchResultItem(BaseModel):
+    index: int
+    email: str
+    ok: bool
+    lead_id: uuid.UUID | None = None
+    error: str | None = None
+
+
+class LeadBatchCreateResponse(BaseModel):
+    results: list[LeadBatchResultItem]
+    created: int
+    failed: int
+
+
+# ── Shortlist (the human picks who to pursue, before any drafting) ──────────
+
+
+class ProspectItem(BaseModel):
+    lead_id: uuid.UUID
+    email: str
+    first_name: str | None
+    last_name: str | None
+    title: str | None
+    company_name: str | None
+    company_domain: str | None
+    region_assumption: str
+    fit_score: float | None
+    bio: str | None
+
+
+class ProspectsResponse(BaseModel):
+    prospects: list[ProspectItem]
+    count: int
+
+
+ShortlistDecision = Literal["pursue", "skip"]
+
+
+class ShortlistRequest(BaseModel):
+    decision: ShortlistDecision
+    actor: str = Field(min_length=1, max_length=200)
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class ShortlistResponse(BaseModel):
+    lead_id: uuid.UUID
+    state: str
+
+
+class BatchShortlistItem(BaseModel):
+    lead_id: uuid.UUID
+    decision: ShortlistDecision
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class BatchShortlistRequest(BaseModel):
+    actor: str = Field(min_length=1, max_length=200)
+    items: list[BatchShortlistItem] = Field(min_length=1, max_length=200)
+
+
+class BatchShortlistResultItem(BaseModel):
+    lead_id: uuid.UUID
+    ok: bool
+    state: str | None = None
+    error: str | None = None
+
+
+class BatchShortlistResponse(BaseModel):
+    results: list[BatchShortlistResultItem]
+    pursued: int
+    skipped: int
+    failed: int
 
 
 # ── Economics (Phase 1A gate) ───────────────────────────────────────────────
