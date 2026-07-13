@@ -26,8 +26,13 @@ None of these block each other; items 1–2 block real-prospect email.
    `RELAY_REGION_BASIS_RULES` (the jurisdiction matrix as config — the
    enforcement code already exists and fail-closes).
 2. **§6 production sending posture** — SES production access (leave the
-   sandbox), per-tenant domain/mailbox verification, warmup plan, DMARC
-   review cadence, and the direct-SES-vs-Smartlead provider decision
+   sandbox; request runbook in [deploy/aws/README.md](../deploy/aws/README.md)),
+   per-tenant domain/mailbox verification (now automated:
+   `/internal/tenants/{id}/sender-identity/provision` + `/sync` create
+   the SES identity, hand back the DKIM records, and flip the attest
+   when AWS confirms — publishing DNS stays with the tenant), warmup
+   plan, DMARC review cadence, and the direct-SES-vs-Smartlead provider
+   decision
    ([decisions/sending-provider.md](decisions/sending-provider.md); the
    Smartlead adapter is interface-only, deliberately).
 3. **KMS secrets** — move `RELAY_MASTER_KEY` and

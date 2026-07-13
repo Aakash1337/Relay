@@ -169,6 +169,25 @@ class TenantSenderAttestResponse(BaseModel):
     sender_identity_verified: bool
 
 
+class SenderIdentityRequest(BaseModel):
+    #: 'domain' verifies the sending domain (DKIM CNAMEs, covers every
+    #: mailbox at it); 'address' verifies the single mailbox (SES emails
+    #: a confirmation link to it).
+    scope: Literal["domain", "address"] = "domain"
+
+
+class SenderIdentityStatusResponse(BaseModel):
+    tenant_id: uuid.UUID
+    identity: str
+    #: SES DKIM/verification status (SUCCESS = verified).
+    ses_status: str
+    verified_for_sending: bool
+    #: CNAMEs the tenant must publish (domain scope; empty for address).
+    dkim_records: list[dict[str, str]]
+    #: The eligibility attest, after this call.
+    sender_identity_verified: bool
+
+
 # ── Leads ───────────────────────────────────────────────────────────────────
 
 

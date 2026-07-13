@@ -52,6 +52,11 @@ from relay.ingest.unsubscribe import (
 from relay.logs import get_logger
 from relay.observability import evaluate_alerts, prometheus_text, tenant_metrics
 from relay.pipeline.runner import PipelineRunner
+from relay.senders.identity import (
+    IdentityUnavailable,
+    identity_client,
+    identity_for,
+)
 from relay.workers.send_worker import process_pending
 
 log = get_logger(__name__)
@@ -151,6 +156,101 @@ def attest_sender_identity(
             id=tenant_id,
             sender_from_address=tenant.sender_from_address,
             sender_identity_verified=True,
+        )
+
+
+def _tenant_identity(session, tenant_id, scope: str):
+    tenant = session.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "tenant not found")
+    if not tenant.sender_from_address:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "tenant has no sender_from_address to provision",
+        )
+    return tenant, identity_for(tenant.sender_from_address, scope)
+
+
+@router.post(
+    "/internal/tenants/{tenant_id}/sender-identity/provision",
+    response_model=schemas.SenderIdentityStatusResponse,
+    dependencies=[Depends(require_admin)],
+)
+def provision_sender_identity(
+    tenant_id: uuid.UUID,
+    body: schemas.SenderIdentityRequest | None = None,
+) -> schemas.SenderIdentityStatusResponse:
+    """Create the tenant's SES identity (idempotent) and return the DNS
+    records their zone needs. Verification stays with AWS + the tenant's
+    DNS — poll /sync until SES confirms."""
+    scope = (body or schemas.SenderIdentityRequest()).scope
+    try:
+        client = identity_client()
+    except IdentityUnavailable as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    with admin_session() as session:
+        tenant, identity = _tenant_identity(session, tenant_id, scope)
+        state = client.provision(identity)
+        audit.record(
+            session,
+            tenant_id=tenant_id,
+            actor_type="system",
+            actor_id="api:sender_identity",
+            action="tenant.sender_identity_provision",
+            entity_type="tenant",
+            entity_id=str(tenant_id),
+            payload={"identity": identity, "ses_status": state.status},
+        )
+        return schemas.SenderIdentityStatusResponse(
+            tenant_id=tenant_id,
+            identity=identity,
+            ses_status=state.status,
+            verified_for_sending=state.verified_for_sending,
+            dkim_records=state.dkim_records(),
+            sender_identity_verified=tenant.sender_identity_verified,
+        )
+
+
+@router.post(
+    "/internal/tenants/{tenant_id}/sender-identity/sync",
+    response_model=schemas.SenderIdentityStatusResponse,
+    dependencies=[Depends(require_admin)],
+)
+def sync_sender_identity(
+    tenant_id: uuid.UUID,
+    body: schemas.SenderIdentityRequest | None = None,
+) -> schemas.SenderIdentityStatusResponse:
+    """Poll SES for the tenant identity's verification state; the moment
+    AWS confirms, the eligibility attest flips automatically (audited).
+    Never flips back on its own — revoking an attest is an operator
+    decision, not a transient-API-state one."""
+    scope = (body or schemas.SenderIdentityRequest()).scope
+    try:
+        client = identity_client()
+    except IdentityUnavailable as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    with admin_session() as session:
+        tenant, identity = _tenant_identity(session, tenant_id, scope)
+        state = client.status(identity)
+        if state.verified_for_sending and not tenant.sender_identity_verified:
+            tenant.sender_identity_verified = True
+            audit.record(
+                session,
+                tenant_id=tenant_id,
+                actor_type="system",
+                actor_id="ses:identity-sync",
+                action="tenant.attest_sender_identity",
+                entity_type="tenant",
+                entity_id=str(tenant_id),
+                payload={"verified": True, "source": "ses", "identity": identity},
+            )
+        return schemas.SenderIdentityStatusResponse(
+            tenant_id=tenant_id,
+            identity=identity,
+            ses_status=state.status,
+            verified_for_sending=state.verified_for_sending,
+            dkim_records=state.dkim_records(),
+            sender_identity_verified=tenant.sender_identity_verified,
         )
 
 
