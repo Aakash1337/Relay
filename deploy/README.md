@@ -20,7 +20,10 @@ is the next step — documented as future, not built.
 One architectural note to not trip over: compute is on GCP but the email
 pipeline (SES → SNS → SQS) stays on **AWS**. That's intentional — RELAY
 calls them as APIs over the internet, needing only outbound egress and
-the AWS credentials. The manual, host-agnostic version of everything
+the AWS credentials. The AWS side has its own Terraform:
+[`deploy/aws/`](aws/README.md) stands up the sending domain (DKIM,
+MAIL FROM), the configuration set, and the SNS→SQS return path, and its
+README carries the SES production-access runbook. The manual, host-agnostic version of everything
 here is [docs/deployment.md](../docs/deployment.md).
 
 ## Layer 1 — the container stack
