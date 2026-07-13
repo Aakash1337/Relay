@@ -354,8 +354,8 @@ simulated provider.
 | Google Gemma workhorse | **Pass** | `gemma-4-31b-it` passed 8/8 live eval cases and successfully performed classification, enrichment, scoring, and reply triage in a live journey. |
 | Google Gemini orchestrator | **Flaky / not release-ready** | One eval run scored 7/8, the next 8/8; a live outreach-copy step also failed once with extra data after JSON, then succeeded when the same lead resumed. See A13. |
 | Live-model pipeline | **Pass after resume** | With the threshold temporarily set to zero to force the qualified branch, the same lead resumed after the Gemini output failure, reached approval, simulated send, live Gemma triage, booking, and `closed`. |
-| AWS identity / SES / SQS | **Pass at authentication/send boundary** | On 2026-07-09, STS authentication succeeded, the configured SQS queue was reachable, and SES accepted one `SendEmail` request. The narrowly scoped IAM user denied SES account/identity inspection, so sandbox, identity, and DKIM state could not be independently read through these credentials. |
-| Real email | **Pass at SES-acceptance boundary; delivery unconfirmed** | Exactly one authorized, allowlisted real-mode job passed all 18 execution-time eligibility checks. The one-shot worker reported `sent=1`, `blocked=0`, `failed=0`, and `errored=0`; the job and lead both ended in `sent`, with start/completion timestamps, one `send.executed` audit record, and a non-empty SES provider message ID. Repeated subsequent SQS polls received no delivery event, and the connected Gmail account was not the recipient mailbox, so inbox delivery was not independently confirmed. The local `.env` master switch remained false at rest and was enabled only in the one-shot sending process. |
+| AWS identity / SES / SQS | **Pass at authentication/send boundary; observability incomplete** | STS authentication succeeded, the configured SQS queue was reachable, and SES accepted the authorized `SendEmail` requests on 2026-07-09 and 2026-07-13. The narrowly scoped IAM user still denied SES account, identity, DKIM, suppression, notification, SNS-subscription, and CloudWatch inspection. Repeated post-send SQS polls returned no delivery, bounce, delay, complaint, or rejection event even though both 2026-07-13 messages ultimately arrived, so the SES → SNS → SQS outcome path remains unverified or misconfigured. |
+| Real email | **Pass end to end; Gmail placement warning** | On 2026-07-13, two fresh authorized, allowlisted real-mode jobs—one per controlled pilot inbox—each passed all 18 execution-time eligibility checks. Each one-shot worker reported `sent=1` with zero blocks, failures, deferrals, or errors; both jobs and leads persisted as `sent` with provider message IDs and `send.executed` audit records. The operator confirmed that the Cybic message reached the inbox and the Gmail message arrived in Spam. This proves transport to both destinations but not reliable Gmail inbox placement. The local `.env` master switch remained false at rest and was enabled only inside each one-shot sending process. |
 | GCP / Cloudflare / EspoCRM | **Not executed live** | Terraform and configuration were validated only. No GCP project, Cloudflare token, or live EspoCRM credentials were available in this audit. |
 
 #### Credential-handling note
@@ -369,17 +369,19 @@ directly from the local secret store without transmitting them in chat.
 
 1. Stabilize structured output from the hosted model and explicitly handle
    `ComputeOutputInvalid` in the pipeline.
-2. Fix the production configuration contract and add a rendered-config test.
-3. Reduce each service's secret set to the minimum it needs.
-4. Enforce migration-before-runtime ordering across host reboots and upgrades.
-5. Pin production/build artifacts and commit the Terraform provider lock file.
-6. Add process-level production validation for known development secrets.
-7. Make the local PostgreSQL test path match the documented one-command flow.
-8. Fix the demo's rejected-lead branch and raise coverage in external adapters
+2. Repair and verify SES outcome telemetry, then investigate Gmail spam
+   placement before treating pilot deliverability as release-ready.
+3. Fix the production configuration contract and add a rendered-config test.
+4. Reduce each service's secret set to the minimum it needs.
+5. Enforce migration-before-runtime ordering across host reboots and upgrades.
+6. Pin production/build artifacts and commit the Terraform provider lock file.
+7. Add process-level production validation for known development secrets.
+8. Make the local PostgreSQL test path match the documented one-command flow.
+9. Fix the demo's rejected-lead branch and raise coverage in external adapters
    and worker entrypoints.
-9. Triage Pylint, add Bandit and dependency auditing to CI, and split the route
+10. Triage Pylint, add Bandit and dependency auditing to CI, and split the route
    module.
-10. Correct the secret-at-rest and Cloud Build runbook documentation.
+11. Correct the secret-at-rest and Cloud Build runbook documentation.
 
 ### Current verification status
 
@@ -396,11 +398,12 @@ directly from the local secret store without transmitting them in chat.
   executed as described above.
 - Online Google model evals and a live-model pipeline: executed; Gemma passed and
   Gemini showed the nondeterministic contract failure in A13.
-- AWS authentication, SQS access, and exactly one authorized SES real-send:
-  executed on 2026-07-09. SES acceptance and RELAY's persisted sent state were
-  verified; no SQS delivery event arrived during the audit window, and the
-  recipient inbox was not accessible through the connected Gmail account, so
-  final delivery remains unconfirmed.
+- AWS authentication, SQS access, and real SES sending: executed. The
+  2026-07-13 follow-up sent exactly one controlled message to each pilot
+  address; both were received, with Cybic inbox placement and Gmail Spam
+  placement. RELAY's persisted sent state was verified for both. No SES outcome
+  event reached SQS during the observation windows, so delivery telemetry is a
+  remaining operational gap despite confirmed transport.
 - GCP, Cloudflare, and live EspoCRM deployment: not executed because the
   required external infrastructure or credentials were unavailable; these are
   explicit remaining boundaries, not claimed passes.
